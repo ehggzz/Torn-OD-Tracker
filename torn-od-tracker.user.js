@@ -4,6 +4,8 @@
 // @version      0.6.3
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
+// @updateURL    https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
+// @downloadURL  https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
 // @match        https://www.torn.com/*
 // @run-at       document-end
 // ==/UserScript==
