@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.4
+// @version      0.6.5
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
@@ -66,6 +66,9 @@
   }
   function xanaxLogApiUrl() {
     return `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+  }
+  function keyInfoApiUrl() {
+    return `https://api.torn.com/key/?selections=info&key=${encodeURIComponent(effectiveKey())}&comment=ODTracker`;
   }
   const POLL_MS = 5 * 60 * 1000;
 
@@ -271,6 +274,32 @@
     } catch {
       return url;
     }
+  }
+
+  async function validateApiKey(data) {
+    if (!effectiveKey()) {
+      data.apiStatus = "API key needed";
+      data.apiError = { code: "LOCAL", error: "No API key" };
+      await saveData(data);
+      return false;
+    }
+
+    data.apiStatus = "Checking key…";
+    data.apiError = null;
+    await saveData(data);
+    await render(data);
+
+    const response = await requestJson(keyInfoApiUrl());
+    if (response?.error) {
+      rememberApiResult(data, response);
+      await saveData(data);
+      return false;
+    }
+
+    data.apiStatus = "Connected";
+    data.apiError = null;
+    await saveData(data);
+    return true;
   }
 
   async function fetchODLogs() {
@@ -664,12 +693,15 @@
 
         runtimeApiKey = value;
         await saveStoredApiKey(runtimeApiKey);
-        data.apiStatus = "Checking...";
+        data.apiStatus = "Checking key…";
         data.apiError = null;
         await render(data);
 
-        await scanODLogs(data);
-        await syncXanaxCount(data);
+        const valid = await validateApiKey(data);
+        if (valid) {
+          await scanODLogs(data);
+          await syncXanaxCount(data);
+        }
         await render(data);
 
         if (input) input.value = "";
