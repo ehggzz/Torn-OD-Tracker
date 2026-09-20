@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.5.1
+// @version      0.5.2
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -169,10 +169,11 @@
         return typeof text === "string" ? JSON.parse(text) : text;
       }
 
-      return await (await fetch(url)).json();
+      const response = await fetch(url);
+      return await response.json();
     } catch (e) {
       console.warn("[OD Tracker] API request failed:", e);
-      return null;
+      return { error: { code: "LOCAL", error: e?.message || "Request failed" } };
     }
   }
 
@@ -186,6 +187,16 @@
       data.apiStatus = "Connected";
       data.apiError = null;
     }
+  }
+
+  function getApiStartupStatus() {
+    if (PDA_API_KEY === "###PDA-APIKEY###") {
+      return "PDA key not injected";
+    }
+    if (typeof PDA_httpGet !== "function") {
+      return "PDA_httpGet unavailable";
+    }
+    return "Not checked";
   }
 
   function withKey(url) {
@@ -605,6 +616,10 @@
 
   async function init() {
     const data = await loadData();
+    data.apiStatus = getApiStartupStatus();
+    if (data.apiStatus !== "Not checked") {
+      await saveData(data);
+    }
 
     if (!data.trackingStarted) {
       data.trackingStarted = new Date().toISOString();
