@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.5.0
+// @version      0.5.1
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -15,8 +15,7 @@
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
   const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
-  // Torn's user/log selection is still served through the v1-style endpoint.
-  // /v2/user/log is not a migrated v2 route.
+  // Current Torn API v2 dedicated user log endpoint.
   const OD_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const XANAX_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const POLL_MS = 5 * 60 * 1000;
@@ -28,7 +27,9 @@
     xanaxSinceOD: 0,
     eventCheckpoint: null,
     xanaxBaseline: null,
-    xanaxBaselineForOD: null
+    xanaxBaselineForOD: null,
+    apiStatus: "Not checked",
+    apiError: null
   };
 
   async function loadData() {
@@ -175,6 +176,18 @@
     }
   }
 
+  function rememberApiResult(data, response) {
+    if (response?.error) {
+      data.apiStatus = "Error";
+      data.apiError = response.error;
+      return;
+    }
+    if (response) {
+      data.apiStatus = "Connected";
+      data.apiError = null;
+    }
+  }
+
   function withKey(url) {
     try {
       const parsed = new URL(url);
@@ -219,7 +232,11 @@
 
   async function scanODLogs(data) {
     const response = await fetchODLogs();
-    if (!response || response.error) return null;
+    rememberApiResult(data, response);
+    if (!response || response.error) {
+      await saveData(data);
+      return null;
+    }
 
     const logs = getLogList(response);
     if (!logs.length) return false;
@@ -270,9 +287,11 @@
       pages++;
 
       const response = await requestJson(url);
+      rememberApiResult(data, response);
       if (!response || response.error) {
         if (response?.error) {
           console.warn("[OD Tracker] Xanax log request returned an API error:", response.error);
+          await saveData(data);
         }
         return null;
       }
@@ -473,6 +492,17 @@
         `💊 Xanax since tracking started: ${Number(data.xanaxSinceOD) || 0}`;
     }
 
+    const apiStatus = root.querySelector(".odt-api-status");
+    if (apiStatus) {
+      if (data.apiStatus === "Error" && data.apiError) {
+        const code = String(data.apiError.code ?? "?");
+        const message = String(data.apiError.error ?? "API request failed");
+        apiStatus.textContent = "Error " + code + ": " + message;
+      } else {
+        apiStatus.textContent = data.apiStatus || "Not checked";
+      }
+    }
+
     const h = root.querySelector(".odt-history");
     if (h.classList.contains("open")) {
       h.innerHTML = data.history.length
@@ -511,7 +541,7 @@
           <button class="odt-action odt-danger" data-action="reset">🗑️ Reset</button>
         </div>
         <div class="odt-history"></div>
-        <div class="odt-api-note">Xanax total uses Torn personalstats; OD detection checks your event log periodically.</div>
+        <div class="odt-api-note">Xanax count uses Torn log entries. API: <span class="odt-api-status">Not checked</span></div>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
@@ -582,7 +612,7 @@
     }
 
     // Use Torn's dedicated Xanax-overdose log as the primary OD source.
-    // If the key cannot access user/log, fall back to the older events feed.
+    // If the key cannot access user/log, fall back to the events feed.
     const logResult = await scanODLogs(data);
     if (logResult === null) {
       await scanEvents(data);
