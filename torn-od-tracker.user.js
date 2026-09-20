@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.3.2
+// @version      0.4.0
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -15,6 +15,7 @@
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
   const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const OD_LOG_API_URL = `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const STATS_API_BASE = `https://api.torn.com/v2/user/personalstats?stat=xantaken&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const POLL_MS = 5 * 60 * 1000;
 
@@ -155,6 +156,93 @@
       }))
       .filter(e => Number.isFinite(e.timestamp) && e.timestamp > 0)
       .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  async function fetchODLogs() {
+    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+
+    try {
+      let response;
+      if (typeof PDA_httpGet === "function") {
+        const result = await PDA_httpGet(OD_LOG_API_URL, {});
+        const text = result?.responseText ?? result;
+        response = typeof text === "string" ? JSON.parse(text) : text;
+      } else {
+        response = await (await fetch(OD_LOG_API_URL)).json();
+      }
+
+      if (response?.error) {
+        console.warn("[OD Tracker] OD log request returned an API error:", response.error);
+        return null;
+      }
+
+      return response;
+    } catch (e) {
+      console.warn("[OD Tracker] OD log request failed:", e);
+      return null;
+    }
+  }
+
+  function getODLogList(response) {
+    if (!response?.log || !Array.isArray(response.log)) return [];
+
+    return response.log
+      .map(entry => {
+        const timestamp = Number(entry?.timestamp) * 1000;
+        const details = entry?.details || {};
+        const title = String(details?.title || entry?.event || "");
+        const id = Number(details?.id);
+        return { timestamp, id, title };
+      })
+      .filter(entry =>
+        Number.isFinite(entry.timestamp) &&
+        entry.timestamp > 0 &&
+        (
+          entry.id === 2291 ||
+          /xanax/i.test(entry.title) && /overdos/i.test(entry.title)
+        )
+      )
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  async function scanODLogs(data) {
+    const response = await fetchODLogs();
+    if (!response || response.error) return null;
+
+    const logs = getODLogList(response);
+    if (!logs.length) return false;
+
+    const baseTime = data.lastOD
+      ? new Date(data.lastOD).getTime()
+      : new Date(data.trackingStarted || Date.now()).getTime();
+
+    let changed = false;
+
+    for (const log of logs) {
+      if (log.timestamp <= baseTime) continue;
+
+      const odIso = new Date(log.timestamp).toISOString();
+
+      if (data.lastOD !== odIso) {
+        if (data.lastOD) {
+          addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+        }
+
+        data.lastOD = odIso;
+        data.xanaxSinceOD = 0;
+        data.xanaxBaseline = null;
+        data.xanaxBaselineForOD = null;
+        data.eventCheckpoint = log.timestamp;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await saveData(data);
+      await syncXanaxCount(data);
+    }
+
+    return changed;
   }
 
   async function fetchEvents() {
@@ -513,12 +601,20 @@
       await saveData(data);
     }
 
-    // Run the API tracker globally so it can detect Xanax/ODs even when
-    // the user is not currently looking at their profile.
-    await scanEvents(data);
-    await syncXanaxCount(data);
-    setInterval(async () => {
+    // Use Torn's dedicated Xanax-overdose log as the primary OD source.
+    // If the key cannot access user/log, fall back to the older events feed.
+    const logResult = await scanODLogs(data);
+    if (logResult === null) {
       await scanEvents(data);
+    } else {
+      await syncXanaxCount(data);
+    }
+
+    setInterval(async () => {
+      const latestLogResult = await scanODLogs(data);
+      if (latestLogResult === null) {
+        await scanEvents(data);
+      }
       await syncXanaxCount(data);
       await render(data);
     }, POLL_MS);
