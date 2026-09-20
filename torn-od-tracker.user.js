@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.4.1
+// @version      0.5.0
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -17,8 +17,8 @@
   const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   // Torn's user/log selection is still served through the v1-style endpoint.
   // /v2/user/log is not a migrated v2 route.
-  const OD_LOG_API_URL = `https://api.torn.com/user/?selections=log&log=2291&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
-  const STATS_API_BASE = `https://api.torn.com/v2/user/personalstats?stat=xantaken&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const OD_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const XANAX_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const POLL_MS = 5 * 60 * 1000;
 
   const defaultData = {
@@ -160,54 +160,59 @@
       .sort((a, b) => a.timestamp - b.timestamp);
   }
 
-  async function fetchODLogs() {
-    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
-
+  async function requestJson(url) {
     try {
-      let response;
       if (typeof PDA_httpGet === "function") {
-        const result = await PDA_httpGet(OD_LOG_API_URL, {});
+        const result = await PDA_httpGet(url, {});
         const text = result?.responseText ?? result;
-        response = typeof text === "string" ? JSON.parse(text) : text;
-      } else {
-        response = await (await fetch(OD_LOG_API_URL)).json();
+        return typeof text === "string" ? JSON.parse(text) : text;
       }
 
-      if (response?.error) {
-        console.warn("[OD Tracker] OD log request returned an API error:", response.error);
-        return null;
-      }
-
-      return response;
+      return await (await fetch(url)).json();
     } catch (e) {
-      console.warn("[OD Tracker] OD log request failed:", e);
+      console.warn("[OD Tracker] API request failed:", e);
       return null;
     }
   }
 
-  function getODLogList(response) {
-    if (!response?.log) return [];
+  function withKey(url) {
+    try {
+      const parsed = new URL(url);
+      if (!parsed.searchParams.get("key")) {
+        parsed.searchParams.set("key", PDA_API_KEY);
+      }
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  }
 
-    const raw = Array.isArray(response.log) ? response.log : Object.values(response.log);
+  async function fetchODLogs() {
+    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+    const response = await requestJson(OD_LOG_API_BASE);
 
-    return raw
-      .map(entry => {
-        const timestamp = Number(entry?.timestamp) * 1000;
-        const text = [
-          entry?.log,
-          entry?.event,
-          entry?.text,
-          entry?.title,
-          entry?.details?.title,
-          entry?.details?.text
-        ].filter(Boolean).join(" ");
-        return { timestamp, text };
-      })
+    if (response?.error) {
+      console.warn("[OD Tracker] OD log request returned an API error:", response.error);
+      return null;
+    }
+
+    return response;
+  }
+
+  function getLogList(response) {
+    if (!response?.log || !Array.isArray(response.log)) return [];
+
+    return response.log
+      .map(entry => ({
+        userLogId: String(entry?.id || ""),
+        timestamp: Number(entry?.timestamp) * 1000,
+        id: Number(entry?.details?.id),
+        title: String(entry?.details?.title || "")
+      }))
       .filter(entry =>
         Number.isFinite(entry.timestamp) &&
         entry.timestamp > 0 &&
-        /xanax/i.test(entry.text) &&
-        /overdos/i.test(entry.text)
+        Number.isFinite(entry.id)
       )
       .sort((a, b) => a.timestamp - b.timestamp);
   }
@@ -216,7 +221,7 @@
     const response = await fetchODLogs();
     if (!response || response.error) return null;
 
-    const logs = getODLogList(response);
+    const logs = getLogList(response);
     if (!logs.length) return false;
 
     const baseTime = data.lastOD
@@ -226,7 +231,7 @@
     let changed = false;
 
     for (const log of logs) {
-      if (log.timestamp <= baseTime) continue;
+      if (log.timestamp <= baseTime || log.id !== 2291) continue;
 
       const odIso = new Date(log.timestamp).toISOString();
 
@@ -244,12 +249,60 @@
       }
     }
 
-    if (changed) {
-      await saveData(data);
-      await syncXanaxCount(data);
+    if (changed) await saveData(data);
+    return changed;
+  }
+
+  async function countXanaxLogsSinceOD(data) {
+    if (!data.lastOD) return null;
+
+    const odTime = new Date(data.lastOD).getTime();
+    if (!Number.isFinite(odTime)) return null;
+    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+
+    let url = `${XANAX_LOG_API_BASE}&from=${Math.floor(odTime / 1000)}`;
+    let total = 0;
+    let pages = 0;
+    const seenPages = new Set();
+
+    while (url && pages < 20 && !seenPages.has(url)) {
+      seenPages.add(url);
+      pages++;
+
+      const response = await requestJson(url);
+      if (!response || response.error) {
+        if (response?.error) {
+          console.warn("[OD Tracker] Xanax log request returned an API error:", response.error);
+        }
+        return null;
+      }
+
+      for (const log of getLogList(response)) {
+        // The overdose-causing dose is at the OD timestamp itself.
+        // Only count Xanax uses strictly after the recorded OD.
+        if (log.timestamp > odTime && (log.id === 2290 || log.id === 2291)) {
+          total++;
+        }
+      }
+
+      const next = response?._metadata?.links?.next;
+      url = next ? withKey(next) : null;
     }
 
-    return changed;
+    return total;
+  }
+
+  async function syncXanaxCount(data) {
+    const count = await countXanaxLogsSinceOD(data);
+    if (count === null) return false;
+
+    if (Number(data.xanaxSinceOD) !== count) {
+      data.xanaxSinceOD = count;
+      await saveData(data);
+      return true;
+    }
+
+    return false;
   }
 
   async function fetchEvents() {
@@ -268,86 +321,6 @@
       console.warn("[OD Tracker] Event request failed:", e);
       return null;
     }
-  }
-
-  async function fetchPersonalXanax(timestamp = null) {
-    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
-
-    try {
-      const url = timestamp
-        ? `${STATS_API_BASE}&timestamp=${Math.floor(timestamp / 1000)}`
-        : STATS_API_BASE;
-
-      let response;
-      if (typeof PDA_httpGet === "function") {
-        const result = await PDA_httpGet(url, {});
-        const text = result?.responseText ?? result;
-        response = typeof text === "string" ? JSON.parse(text) : text;
-      } else {
-        response = await (await fetch(url)).json();
-      }
-
-      if (response?.error) {
-        console.warn("[OD Tracker] Personal stats request returned an API error:", response.error);
-        return null;
-      }
-
-      // v2 returns current stats as an object, but historical stats are
-      // returned as an array of { name, value, timestamp } objects.
-      // Support both shapes (and a few harmless variants) so xantaken
-      // does not silently turn into NaN.
-      const stats = response?.personalstats;
-
-      if (Array.isArray(stats)) {
-        const entry = stats.find(item => item?.name === "xantaken");
-        const value = Number(entry?.value);
-        return Number.isFinite(value) ? value : null;
-      }
-
-      const direct = Number(stats?.xantaken);
-      if (Number.isFinite(direct)) return direct;
-
-      const nested = Number(stats?.xantaken?.value);
-      return Number.isFinite(nested) ? nested : null;
-    } catch (e) {
-      console.warn("[OD Tracker] Personal stats request failed:", e);
-      return null;
-    }
-  }
-
-  async function syncXanaxCount(data) {
-    if (!data.lastOD) return false;
-
-    const odTime = new Date(data.lastOD).getTime();
-    if (!Number.isFinite(odTime)) return false;
-
-    let changed = false;
-
-    // Historical xantaken is used as the baseline at the moment of the OD.
-    // This intentionally excludes the OD-causing Xanax from the next period.
-    if (
-      data.xanaxBaseline === null ||
-      data.xanaxBaselineForOD !== data.lastOD
-    ) {
-      const baseline = await fetchPersonalXanax(odTime);
-      if (baseline !== null) {
-        data.xanaxBaseline = baseline;
-        data.xanaxBaselineForOD = data.lastOD;
-        changed = true;
-      }
-    }
-
-    const currentXanax = await fetchPersonalXanax();
-    if (currentXanax !== null && data.xanaxBaseline !== null) {
-      const calculated = Math.max(0, currentXanax - Number(data.xanaxBaseline));
-      if (Number(data.xanaxSinceOD) !== calculated) {
-        data.xanaxSinceOD = calculated;
-        changed = true;
-      }
-    }
-
-    if (changed) await saveData(data);
-    return changed;
   }
 
   async function scanEvents(data) {
@@ -613,9 +586,8 @@
     const logResult = await scanODLogs(data);
     if (logResult === null) {
       await scanEvents(data);
-    } else {
-      await syncXanaxCount(data);
     }
+    await syncXanaxCount(data);
 
     setInterval(async () => {
       const latestLogResult = await scanODLogs(data);
