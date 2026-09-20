@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.1.0
+// @version      0.1.1
 // @description  A simple, local Torn PDA tracker for time since your last overdose.
 // @author       ehggzz
 // @match        https://www.torn.com/profiles.php?*
@@ -51,10 +51,42 @@
     if (!value) return "Unknown";
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "Unknown";
-    return d.toLocaleString(undefined, {
-      day: "2-digit", month: "short", year: "numeric",
-      hour: "2-digit", minute: "2-digit"
+    return d.toLocaleString("en-GB", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+      hour12: false
     });
+  }
+
+  function parseUserDateTime(value) {
+    const text = String(value || "").trim();
+
+    // Accept UK format: DD/MM/YYYY HH:MM (time optional).
+    const uk = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+    if (uk) {
+      const day = Number(uk[1]);
+      const month = Number(uk[2]);
+      const year = Number(uk[3]);
+      const hour = uk[4] === undefined ? 0 : Number(uk[4]);
+      const minute = uk[5] === undefined ? 0 : Number(uk[5]);
+
+      if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59) return null;
+
+      const d = new Date(year, month - 1, day, hour, minute, 0, 0);
+      if (
+        d.getFullYear() !== year ||
+        d.getMonth() !== month - 1 ||
+        d.getDate() !== day ||
+        d.getHours() !== hour ||
+        d.getMinutes() !== minute
+      ) return null;
+
+      return d;
+    }
+
+    // Also accept the previous ISO-style format for compatibility.
+    const iso = new Date(text);
+    return Number.isNaN(iso.getTime()) ? null : iso;
   }
 
   function injectStyles() {
@@ -174,8 +206,18 @@
       if (action === "record") {
         if (confirm("Record an overdose now?")) await setLastOD(new Date().toISOString(), data);
       } else if (action === "edit") {
-        const value = prompt("Enter your last overdose date/time (YYYY-MM-DDTHH:MM):", data.lastOD ? new Date(data.lastOD).toISOString().slice(0,16) : "");
-        if (value) await setLastOD(value, data);
+        const value = prompt(
+          "Enter your last overdose date/time in UK format (DD/MM/YYYY HH:MM). Time is optional.\n\nExample: 05/09/2026 21:30",
+          data.lastOD ? formatDate(data.lastOD) : ""
+        );
+        if (value) {
+          const parsed = parseUserDateTime(value);
+          if (!parsed) {
+            alert("I couldn't read that date. Please use DD/MM/YYYY HH:MM\n\nExample: 05/09/2026 21:30");
+            return;
+          }
+          await setLastOD(parsed.toISOString(), data);
+        }
       } else if (action === "history") {
         root.querySelector(".odt-history").classList.toggle("open");
         await render(data);
