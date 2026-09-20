@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.2
+// @version      0.6.3
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -56,14 +56,14 @@
     return runtimeApiKey && runtimeApiKey !== "###PDA-APIKEY###" ? runtimeApiKey : "";
   }
   function eventsApiUrl() {
-    return `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+    return `https://api.torn.com/user/?selections=events&comment=TornODTracker`;
   }
   // Current Torn API v2 dedicated user log endpoint.
   function odLogApiUrl() {
-    return `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+    return `https://api.torn.com/v2/user/log?log=2291&limit=100&comment=TornODTracker`;
   }
   function xanaxLogApiUrl() {
-    return `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+    return `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&comment=TornODTracker`;
   }
   const POLL_MS = 5 * 60 * 1000;
 
@@ -210,13 +210,21 @@
 
   async function requestJson(url) {
     try {
+      const key = effectiveKey();
+      if (!key) return { error: { code: "LOCAL", error: "No API key" } };
+
+      const headers = {
+        "Accept": "application/json",
+        "Authorization": `ApiKey ${key}`
+      };
+
       if (typeof PDA_httpGet === "function") {
-        const result = await PDA_httpGet(url, {});
+        const result = await PDA_httpGet(url, headers);
         const text = result?.responseText ?? result;
         return typeof text === "string" ? JSON.parse(text) : text;
       }
 
-      const response = await fetch(url);
+      const response = await fetch(url, { headers });
       return await response.json();
     } catch (e) {
       console.warn("[OD Tracker] API request failed:", e);
@@ -387,12 +395,20 @@
 
     try {
       if (typeof PDA_httpGet === "function") {
-        const response = await PDA_httpGet(eventsApiUrl(), {});
+        const response = await PDA_httpGet(eventsApiUrl(), {
+          "Accept": "application/json",
+          "Authorization": `ApiKey ${effectiveKey()}`
+        });
         const text = response?.responseText ?? response;
         return typeof text === "string" ? JSON.parse(text) : text;
       }
 
-      const response = await fetch(eventsApiUrl());
+      const response = await fetch(eventsApiUrl(), {
+        headers: {
+          "Accept": "application/json",
+          "Authorization": `ApiKey ${effectiveKey()}`
+        }
+      });
       return await response.json();
     } catch (e) {
       console.warn("[OD Tracker] Event request failed:", e);
