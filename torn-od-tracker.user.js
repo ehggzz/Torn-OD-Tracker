@@ -1,29 +1,45 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.1.1
-// @description  A simple, local Torn PDA tracker for time since your last overdose.
+// @version      0.2.0
+// @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
-// @match        https://www.torn.com/profiles.php?*
+// @match        https://www.torn.com/*
 // @run-at       document-end
 // ==/UserScript==
 
 (async () => {
   "use strict";
+
   const STORAGE_KEY = "od_tracker_data_v1";
   const ROOT_ID = "od-tracker-root";
-  const defaultData = { lastOD: null, trackingStarted: null, history: [] };
+  const PDA_API_KEY = "###PDA-APIKEY###";
+  const API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const POLL_MS = 5 * 60 * 1000;
+
+  const defaultData = {
+    lastOD: null,
+    trackingStarted: null,
+    history: [],
+    xanaxSinceOD: 0,
+    eventCheckpoint: null
+  };
 
   async function loadData() {
     try {
       if (typeof PDA_storage !== "undefined") {
         return { ...defaultData, ...(await PDA_storage.get(STORAGE_KEY, defaultData)) };
       }
-    } catch (e) { console.warn("[OD Tracker] PDA storage unavailable:", e); }
+    } catch (e) {
+      console.warn("[OD Tracker] PDA storage unavailable:", e);
+    }
+
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       return raw ? { ...defaultData, ...JSON.parse(raw) } : { ...defaultData };
-    } catch { return { ...defaultData }; }
+    } catch {
+      return { ...defaultData };
+    }
   }
 
   async function saveData(data) {
@@ -32,7 +48,9 @@
         await PDA_storage.set(STORAGE_KEY, data);
         return;
       }
-    } catch (e) { console.warn("[OD Tracker] PDA storage write failed:", e); }
+    } catch (e) {
+      console.warn("[OD Tracker] PDA storage write failed:", e);
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }
 
@@ -52,17 +70,19 @@
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "Unknown";
     return d.toLocaleString("en-GB", {
-      day: "2-digit", month: "2-digit", year: "numeric",
-      hour: "2-digit", minute: "2-digit",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
       hour12: false
     });
   }
 
   function parseUserDateTime(value) {
     const text = String(value || "").trim();
-
-    // Accept UK format: DD/MM/YYYY HH:MM (time optional).
     const uk = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+
     if (uk) {
       const day = Number(uk[1]);
       const month = Number(uk[2]);
@@ -84,13 +104,144 @@
       return d;
     }
 
-    // Also accept the previous ISO-style format for compatibility.
     const iso = new Date(text);
     return Number.isNaN(iso.getTime()) ? null : iso;
   }
 
+  function normaliseHistory(data) {
+    if (!Array.isArray(data.history)) data.history = [];
+
+    data.history = data.history.map(entry => {
+      if (typeof entry === "string") return { od: entry, xanax: null };
+      return {
+        od: entry?.od || entry?.lastOD || null,
+        xanax: Number.isFinite(Number(entry?.xanax)) ? Number(entry.xanax) : null
+      };
+    }).filter(entry => entry.od);
+  }
+
+  function addHistoryEntry(data, odIso, xanaxCount) {
+    normaliseHistory(data);
+    const existing = data.history.find(x => x.od === odIso);
+    if (existing) {
+      if (xanaxCount !== null && xanaxCount !== undefined) existing.xanax = xanaxCount;
+    } else {
+      data.history.unshift({ od: odIso, xanax: xanaxCount });
+    }
+    data.history = data.history.slice(0, 50);
+  }
+
+  function isXanaxUse(eventText) {
+    return typeof eventText === "string" &&
+      /\b(?:popped?|took)\b.*\bxanax\b/i.test(eventText);
+  }
+
+  function isXanaxOD(eventText) {
+    return typeof eventText === "string" &&
+      /overdos/i.test(eventText) &&
+      /xanax/i.test(eventText);
+  }
+
+  function getEventList(events) {
+    if (!events) return [];
+    const list = Array.isArray(events) ? events : Object.values(events);
+    return list
+      .map(e => ({
+        timestamp: Number(e?.timestamp) * 1000,
+        text: typeof e?.event === "string" ? e.event : ""
+      }))
+      .filter(e => Number.isFinite(e.timestamp) && e.timestamp > 0)
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  async function fetchEvents() {
+    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+
+    try {
+      if (typeof PDA_httpGet === "function") {
+        const response = await PDA_httpGet(API_URL, {});
+        const text = response?.responseText ?? response;
+        return typeof text === "string" ? JSON.parse(text) : text;
+      }
+
+      const response = await fetch(API_URL);
+      return await response.json();
+    } catch (e) {
+      console.warn("[OD Tracker] Event request failed:", e);
+      return null;
+    }
+  }
+
+  async function scanEvents(data) {
+    const response = await fetchEvents();
+    if (!response || response.error || !response.events) return false;
+
+    const events = getEventList(response.events);
+    if (!events.length) return false;
+
+    normaliseHistory(data);
+
+    const baseTime = data.lastOD
+      ? new Date(data.lastOD).getTime()
+      : new Date(data.trackingStarted || Date.now()).getTime();
+
+    if (!data.eventCheckpoint) data.eventCheckpoint = baseTime;
+
+    let checkpoint = Number(data.eventCheckpoint) || baseTime;
+    let changed = false;
+
+    // Group events by timestamp so an OD event and its Xanax-use event
+    // at the same moment count as one Xanax, not two.
+    const groups = new Map();
+
+    for (const event of events) {
+      if (event.timestamp <= checkpoint) continue;
+      const key = String(event.timestamp);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(event.text);
+    }
+
+    const timestamps = [...groups.keys()].map(Number).sort((a, b) => a - b);
+
+    for (const timestamp of timestamps) {
+      const texts = groups.get(String(timestamp)) || [];
+      const hasXanaxUse = texts.some(isXanaxUse);
+      const hasXanaxOD = texts.some(isXanaxOD);
+
+      if (hasXanaxUse || hasXanaxOD) {
+        // Any OD on Xanax proves a Xanax was consumed, even if the API
+        // only returned the separate "overdosed on Xanax" event.
+        data.xanaxSinceOD = Number(data.xanaxSinceOD) || 0;
+        data.xanaxSinceOD += 1;
+        changed = true;
+      }
+
+      if (hasXanaxOD) {
+        const odIso = new Date(timestamp).toISOString();
+
+        // The count includes the Xanax that caused this OD.
+        addHistoryEntry(data, odIso, data.xanaxSinceOD);
+
+        data.lastOD = odIso;
+        data.xanaxSinceOD = 0;
+        changed = true;
+      }
+
+      checkpoint = Math.max(checkpoint, timestamp);
+    }
+
+    if (checkpoint !== data.eventCheckpoint) {
+      data.eventCheckpoint = checkpoint;
+      changed = true;
+    }
+
+    if (changed) await saveData(data);
+    return changed;
+  }
+
   function injectStyles() {
     if (document.getElementById("od-tracker-style")) return;
+
     const style = document.createElement("style");
     style.id = "od-tracker-style";
     style.textContent = `
@@ -109,6 +260,7 @@
       #${ROOT_ID} .odt-panel.open { display:block; }
       #${ROOT_ID} .odt-main { text-align:center; margin-bottom:10px; }
       #${ROOT_ID} .odt-time { font-size:19px; font-weight:700; color:#fff; }
+      #${ROOT_ID} .odt-stat { margin-top:4px; font-size:13px; color:#ddd; }
       #${ROOT_ID} .odt-muted { opacity:.65; font-size:11px; }
       #${ROOT_ID} .odt-buttons { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:10px; }
       #${ROOT_ID} button.odt-action {
@@ -118,8 +270,10 @@
       #${ROOT_ID} button.odt-action:hover { background:#383838; }
       #${ROOT_ID} .odt-history { margin-top:10px; display:none; }
       #${ROOT_ID} .odt-history.open { display:block; }
-      #${ROOT_ID} .odt-history-row { padding:4px 0; border-bottom:1px solid #333; }
+      #${ROOT_ID} .odt-history-row { padding:5px 0; border-bottom:1px solid #333; }
+      #${ROOT_ID} .odt-history-xan { opacity:.7; margin-left:5px; }
       #${ROOT_ID} .odt-danger { color:#f08a8a !important; }
+      #${ROOT_ID} .odt-api-note { margin-top:8px; font-size:10px; opacity:.55; }
     `;
     document.head.appendChild(style);
   }
@@ -128,19 +282,23 @@
     return document.querySelector("#profileroot") ||
       document.querySelector(".profile-container") ||
       document.querySelector("#mainContainer .content-wrapper") ||
-      document.querySelector("#mainContainer") || document.body;
+      document.querySelector("#mainContainer") ||
+      document.body;
   }
 
-  async function setLastOD(iso, data) {
+  async function setLastOD(iso, data, preserveCount = false) {
     const value = new Date(iso);
     if (Number.isNaN(value.getTime())) return;
-    data.lastOD = value.toISOString();
-    data.trackingStarted = data.trackingStarted || new Date().toISOString();
-    data.history = Array.isArray(data.history) ? data.history : [];
-    if (!data.history.includes(data.lastOD)) {
-      data.history.unshift(data.lastOD);
-      data.history = data.history.slice(0, 50);
+
+    if (data.lastOD && !preserveCount) {
+      addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
     }
+
+    data.lastOD = value.toISOString();
+    data.xanaxSinceOD = preserveCount ? (Number(data.xanaxSinceOD) || 0) : 0;
+    data.eventCheckpoint = value.getTime();
+    data.trackingStarted = data.trackingStarted || new Date().toISOString();
+
     await saveData(data);
     await render(data);
   }
@@ -148,29 +306,50 @@
   async function render(data) {
     const root = document.getElementById(ROOT_ID);
     if (!root) return;
+
+    normaliseHistory(data);
+
     const panel = root.querySelector(".odt-panel");
-    root.querySelector(".odt-arrow").textContent = panel.classList.contains("open") ? "▴" : "▾";
+    root.querySelector(".odt-arrow").textContent =
+      panel.classList.contains("open") ? "▴" : "▾";
+
     if (data.lastOD) {
-      root.querySelector(".odt-time").textContent = formatDuration(Date.now() - new Date(data.lastOD).getTime());
+      root.querySelector(".odt-time").textContent =
+        formatDuration(Date.now() - new Date(data.lastOD).getTime());
       root.querySelector(".odt-status").textContent = "since last overdose";
-      root.querySelector(".odt-last").textContent = `Last OD: ${formatDate(data.lastOD)}`;
+      root.querySelector(".odt-last").textContent =
+        `Last OD: ${formatDate(data.lastOD)}`;
+      root.querySelector(".odt-xanax").textContent =
+        `💊 Xanax since OD: ${Number(data.xanaxSinceOD) || 0}`;
     } else {
       root.querySelector(".odt-time").textContent = "Previous OD unknown";
       root.querySelector(".odt-status").textContent =
-        data.trackingStarted ? `Tracking since ${formatDate(data.trackingStarted)}` : "Tracking has not started";
+        data.trackingStarted
+          ? `Tracking since ${formatDate(data.trackingStarted)}`
+          : "Tracking has not started";
       root.querySelector(".odt-last").textContent = "";
+      root.querySelector(".odt-xanax").textContent =
+        `💊 Xanax since tracking started: ${Number(data.xanaxSinceOD) || 0}`;
     }
+
     const h = root.querySelector(".odt-history");
     if (h.classList.contains("open")) {
       h.innerHTML = data.history.length
-        ? data.history.map((x,i)=>`<div class="odt-history-row">${i+1}. ${formatDate(x)}</div>`).join("")
+        ? data.history.map((entry, i) => {
+            const xanax = entry.xanax === null || entry.xanax === undefined
+              ? ""
+              : `<span class="odt-history-xan">• ${entry.xanax} Xanax</span>`;
+            return `<div class="odt-history-row">${i + 1}. ${formatDate(entry.od)} ${xanax}</div>`;
+          }).join("")
         : '<div class="odt-muted">No OD history recorded yet.</div>';
     }
   }
 
   async function build(data) {
     if (document.getElementById(ROOT_ID)) return;
+
     injectStyles();
+
     const root = document.createElement("section");
     root.id = ROOT_ID;
     root.innerHTML = `
@@ -182,6 +361,7 @@
           <div class="odt-time">Loading…</div>
           <div class="odt-status">Loading…</div>
           <div class="odt-last"></div>
+          <div class="odt-stat odt-xanax">💊 Xanax since OD: 0</div>
         </div>
         <div class="odt-buttons">
           <button class="odt-action" data-action="record">💀 Record OD</button>
@@ -190,32 +370,44 @@
           <button class="odt-action odt-danger" data-action="reset">🗑️ Reset</button>
         </div>
         <div class="odt-history"></div>
+        <div class="odt-api-note">Xanax/OD detection checks your Torn event log periodically.</div>
       </div>`;
+
     findProfileInsertionPoint().prepend(root);
+
     const header = root.querySelector(".odt-header");
     const panel = root.querySelector(".odt-panel");
+
     header.addEventListener("click", () => {
       const open = panel.classList.toggle("open");
       header.setAttribute("aria-expanded", String(open));
       header.querySelector(".odt-arrow").textContent = open ? "▴" : "▾";
     });
+
     root.addEventListener("click", async event => {
       const button = event.target.closest("[data-action]");
       if (!button) return;
+
       const action = button.dataset.action;
+
       if (action === "record") {
-        if (confirm("Record an overdose now?")) await setLastOD(new Date().toISOString(), data);
+        if (confirm("Record an overdose now?")) {
+          await setLastOD(new Date().toISOString(), data);
+        }
       } else if (action === "edit") {
         const value = prompt(
           "Enter your last overdose date/time in UK format (DD/MM/YYYY HH:MM). Time is optional.\n\nExample: 05/09/2026 21:30",
           data.lastOD ? formatDate(data.lastOD) : ""
         );
+
         if (value) {
           const parsed = parseUserDateTime(value);
+
           if (!parsed) {
             alert("I couldn't read that date. Please use DD/MM/YYYY HH:MM\n\nExample: 05/09/2026 21:30");
             return;
           }
+
           await setLastOD(parsed.toISOString(), data);
         }
       } else if (action === "history") {
@@ -223,25 +415,47 @@
         await render(data);
       } else if (action === "reset") {
         if (confirm("Reset OD Tracker and erase its recorded OD history?")) {
-          data.lastOD = null; data.trackingStarted = new Date().toISOString(); data.history = [];
-          await saveData(data); await render(data);
+          data.lastOD = null;
+          data.trackingStarted = new Date().toISOString();
+          data.xanaxSinceOD = 0;
+          data.eventCheckpoint = data.trackingStarted ? new Date(data.trackingStarted).getTime() : Date.now();
+          data.history = [];
+          await saveData(data);
+          await render(data);
         }
       }
     });
+
     await render(data);
     setInterval(() => render(data), 30000);
   }
 
   async function init() {
-    if (!/\/profiles\.php/i.test(location.pathname)) return;
     const data = await loadData();
-    if (!data.trackingStarted) { data.trackingStarted = new Date().toISOString(); await saveData(data); }
+
+    if (!data.trackingStarted) {
+      data.trackingStarted = new Date().toISOString();
+      await saveData(data);
+    }
+
+    // Run the API tracker globally so it can detect Xanax/ODs even when
+    // the user is not currently looking at their profile.
+    await scanEvents(data);
+    setInterval(() => scanEvents(data), POLL_MS);
+
+    // Only show the visual widget on profile pages.
+    if (!/\/profiles\.php/i.test(location.pathname)) return;
+
     let attempts = 0;
     const timer = setInterval(async () => {
       attempts++;
-      if (findProfileInsertionPoint()) { clearInterval(timer); await build(data); }
+      if (findProfileInsertionPoint()) {
+        clearInterval(timer);
+        await build(data);
+      }
       if (attempts >= 20) clearInterval(timer);
     }, 500);
   }
+
   init();
 })();
