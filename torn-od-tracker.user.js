@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.4.0
+// @version      0.4.1
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -15,7 +15,9 @@
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
   const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
-  const OD_LOG_API_URL = `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  // Torn's user/log selection is still served through the v1-style endpoint.
+  // /v2/user/log is not a migrated v2 route.
+  const OD_LOG_API_URL = `https://api.torn.com/user/?selections=log&log=2291&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const STATS_API_BASE = `https://api.torn.com/v2/user/personalstats?stat=xantaken&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const POLL_MS = 5 * 60 * 1000;
 
@@ -184,23 +186,28 @@
   }
 
   function getODLogList(response) {
-    if (!response?.log || !Array.isArray(response.log)) return [];
+    if (!response?.log) return [];
 
-    return response.log
+    const raw = Array.isArray(response.log) ? response.log : Object.values(response.log);
+
+    return raw
       .map(entry => {
         const timestamp = Number(entry?.timestamp) * 1000;
-        const details = entry?.details || {};
-        const title = String(details?.title || entry?.event || "");
-        const id = Number(details?.id);
-        return { timestamp, id, title };
+        const text = [
+          entry?.log,
+          entry?.event,
+          entry?.text,
+          entry?.title,
+          entry?.details?.title,
+          entry?.details?.text
+        ].filter(Boolean).join(" ");
+        return { timestamp, text };
       })
       .filter(entry =>
         Number.isFinite(entry.timestamp) &&
         entry.timestamp > 0 &&
-        (
-          entry.id === 2291 ||
-          /xanax/i.test(entry.title) && /overdos/i.test(entry.title)
-        )
+        /xanax/i.test(entry.text) &&
+        /overdos/i.test(entry.text)
       )
       .sort((a, b) => a.timestamp - b.timestamp);
   }
