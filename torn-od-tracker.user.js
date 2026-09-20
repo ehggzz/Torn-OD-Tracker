@@ -42,10 +42,16 @@
   function effectiveKey() {
     return runtimeApiKey && runtimeApiKey !== "###PDA-APIKEY###" ? runtimeApiKey : "";
   }
-  const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+  function eventsApiUrl() {
+    return `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+  }
   // Current Torn API v2 dedicated user log endpoint.
-  const OD_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
-  const XANAX_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+  function odLogApiUrl() {
+    return `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+  }
+  function xanaxLogApiUrl() {
+    return `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+  }
   const POLL_MS = 5 * 60 * 1000;
 
   const defaultData = {
@@ -241,7 +247,7 @@
 
   async function fetchODLogs() {
     if (!effectiveKey()) return null;
-    const response = await requestJson(OD_LOG_API_BASE);
+    const response = await requestJson(odLogApiUrl());
 
     if (response?.error) {
       console.warn("[OD Tracker] OD log request returned an API error:", response.error);
@@ -316,7 +322,7 @@
     if (!Number.isFinite(odTime)) return null;
     if (!effectiveKey() || effectiveKey() === "###PDA-APIKEY###") return null;
 
-    let url = `${XANAX_LOG_API_BASE}&from=${Math.floor(odTime / 1000)}`;
+    let url = `${xanaxLogApiUrl()}&from=${Math.floor(odTime / 1000)}`;
     let total = 0;
     let pages = 0;
     const seenPages = new Set();
@@ -368,12 +374,12 @@
 
     try {
       if (typeof PDA_httpGet === "function") {
-        const response = await PDA_httpGet(EVENTS_API_URL, {});
+        const response = await PDA_httpGet(eventsApiUrl(), {});
         const text = response?.responseText ?? response;
         return typeof text === "string" ? JSON.parse(text) : text;
       }
 
-      const response = await fetch(EVENTS_API_URL);
+      const response = await fetch(eventsApiUrl());
       return await response.json();
     } catch (e) {
       console.warn("[OD Tracker] Event request failed:", e);
