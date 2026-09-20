@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.2.0
+// @version      0.3.0
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -14,7 +14,8 @@
   const STORAGE_KEY = "od_tracker_data_v1";
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
-  const API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const STATS_API_BASE = `https://api.torn.com/user/?selections=personalstats&stat=xantaken&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const POLL_MS = 5 * 60 * 1000;
 
   const defaultData = {
@@ -22,7 +23,9 @@
     trackingStarted: null,
     history: [],
     xanaxSinceOD: 0,
-    eventCheckpoint: null
+    eventCheckpoint: null,
+    xanaxBaseline: null,
+    xanaxBaselineForOD: null
   };
 
   async function loadData() {
@@ -159,17 +162,82 @@
 
     try {
       if (typeof PDA_httpGet === "function") {
-        const response = await PDA_httpGet(API_URL, {});
+        const response = await PDA_httpGet(EVENTS_API_URL, {});
         const text = response?.responseText ?? response;
         return typeof text === "string" ? JSON.parse(text) : text;
       }
 
-      const response = await fetch(API_URL);
+      const response = await fetch(EVENTS_API_URL);
       return await response.json();
     } catch (e) {
       console.warn("[OD Tracker] Event request failed:", e);
       return null;
     }
+  }
+
+  async function fetchPersonalXanax(timestamp = null) {
+    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+
+    try {
+      const url = timestamp
+        ? `${STATS_API_BASE}&timestamp=${Math.floor(timestamp / 1000)}`
+        : STATS_API_BASE;
+
+      let response;
+      if (typeof PDA_httpGet === "function") {
+        const result = await PDA_httpGet(url, {});
+        const text = result?.responseText ?? result;
+        response = typeof text === "string" ? JSON.parse(text) : text;
+      } else {
+        response = await (await fetch(url)).json();
+      }
+
+      if (response?.error) {
+        console.warn("[OD Tracker] Personal stats request returned an API error:", response.error);
+        return null;
+      }
+
+      const value = Number(response?.personalstats?.xantaken);
+      return Number.isFinite(value) ? value : null;
+    } catch (e) {
+      console.warn("[OD Tracker] Personal stats request failed:", e);
+      return null;
+    }
+  }
+
+  async function syncXanaxCount(data) {
+    if (!data.lastOD) return false;
+
+    const odTime = new Date(data.lastOD).getTime();
+    if (!Number.isFinite(odTime)) return false;
+
+    let changed = false;
+
+    // Historical xantaken is used as the baseline at the moment of the OD.
+    // This intentionally excludes the OD-causing Xanax from the next period.
+    if (
+      data.xanaxBaseline === null ||
+      data.xanaxBaselineForOD !== data.lastOD
+    ) {
+      const baseline = await fetchPersonalXanax(odTime);
+      if (baseline !== null) {
+        data.xanaxBaseline = baseline;
+        data.xanaxBaselineForOD = data.lastOD;
+        changed = true;
+      }
+    }
+
+    const currentXanax = await fetchPersonalXanax();
+    if (currentXanax !== null && data.xanaxBaseline !== null) {
+      const calculated = Math.max(0, currentXanax - Number(data.xanaxBaseline));
+      if (Number(data.xanaxSinceOD) !== calculated) {
+        data.xanaxSinceOD = calculated;
+        changed = true;
+      }
+    }
+
+    if (changed) await saveData(data);
+    return changed;
   }
 
   async function scanEvents(data) {
@@ -190,44 +258,28 @@
     let checkpoint = Number(data.eventCheckpoint) || baseTime;
     let changed = false;
 
-    // Group events by timestamp so an OD event and its Xanax-use event
-    // at the same moment count as one Xanax, not two.
-    const groups = new Map();
-
     for (const event of events) {
       if (event.timestamp <= checkpoint) continue;
-      const key = String(event.timestamp);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(event.text);
-    }
 
-    const timestamps = [...groups.keys()].map(Number).sort((a, b) => a - b);
+      // We only use the event stream to identify the exact time of an OD.
+      // Xanax totals themselves come from personalstats.xantaken.
+      if (isXanaxOD(event.text)) {
+        const odIso = new Date(event.timestamp).toISOString();
 
-    for (const timestamp of timestamps) {
-      const texts = groups.get(String(timestamp)) || [];
-      const hasXanaxUse = texts.some(isXanaxUse);
-      const hasXanaxOD = texts.some(isXanaxOD);
+        if (data.lastOD !== odIso) {
+          if (data.lastOD) {
+            addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+          }
 
-      if (hasXanaxUse || hasXanaxOD) {
-        // Any OD on Xanax proves a Xanax was consumed, even if the API
-        // only returned the separate "overdosed on Xanax" event.
-        data.xanaxSinceOD = Number(data.xanaxSinceOD) || 0;
-        data.xanaxSinceOD += 1;
-        changed = true;
+          data.lastOD = odIso;
+          data.xanaxSinceOD = 0;
+          data.xanaxBaseline = null;
+          data.xanaxBaselineForOD = null;
+          changed = true;
+        }
       }
 
-      if (hasXanaxOD) {
-        const odIso = new Date(timestamp).toISOString();
-
-        // The count includes the Xanax that caused this OD.
-        addHistoryEntry(data, odIso, data.xanaxSinceOD);
-
-        data.lastOD = odIso;
-        data.xanaxSinceOD = 0;
-        changed = true;
-      }
-
-      checkpoint = Math.max(checkpoint, timestamp);
+      checkpoint = Math.max(checkpoint, event.timestamp);
     }
 
     if (checkpoint !== data.eventCheckpoint) {
@@ -236,7 +288,10 @@
     }
 
     if (changed) await saveData(data);
-    return changed;
+
+    // Refresh the cumulative Xanax calculation after processing any new OD.
+    const xanaxChanged = await syncXanaxCount(data);
+    return changed || xanaxChanged;
   }
 
   function injectStyles() {
@@ -296,10 +351,13 @@
 
     data.lastOD = value.toISOString();
     data.xanaxSinceOD = preserveCount ? (Number(data.xanaxSinceOD) || 0) : 0;
+    data.xanaxBaseline = null;
+    data.xanaxBaselineForOD = null;
     data.eventCheckpoint = value.getTime();
     data.trackingStarted = data.trackingStarted || new Date().toISOString();
 
     await saveData(data);
+    await syncXanaxCount(data);
     await render(data);
   }
 
@@ -370,7 +428,7 @@
           <button class="odt-action odt-danger" data-action="reset">🗑️ Reset</button>
         </div>
         <div class="odt-history"></div>
-        <div class="odt-api-note">Xanax/OD detection checks your Torn event log periodically.</div>
+        <div class="odt-api-note">Xanax total uses Torn personalstats; OD detection checks your event log periodically.</div>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
@@ -418,6 +476,8 @@
           data.lastOD = null;
           data.trackingStarted = new Date().toISOString();
           data.xanaxSinceOD = 0;
+          data.xanaxBaseline = null;
+          data.xanaxBaselineForOD = null;
           data.eventCheckpoint = data.trackingStarted ? new Date(data.trackingStarted).getTime() : Date.now();
           data.history = [];
           await saveData(data);
@@ -441,7 +501,12 @@
     // Run the API tracker globally so it can detect Xanax/ODs even when
     // the user is not currently looking at their profile.
     await scanEvents(data);
-    setInterval(() => scanEvents(data), POLL_MS);
+    await syncXanaxCount(data);
+    setInterval(async () => {
+      await scanEvents(data);
+      await syncXanaxCount(data);
+      await render(data);
+    }, POLL_MS);
 
     // Only show the visual widget on profile pages.
     if (!/\/profiles\.php/i.test(location.pathname)) return;
