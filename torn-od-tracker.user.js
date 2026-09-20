@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.5.2
+// @version      0.6.0
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -14,10 +14,38 @@
   const STORAGE_KEY = "od_tracker_data_v1";
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
-  const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  let runtimeApiKey = PDA_API_KEY;
+
+  async function getStoredApiKey() {
+    try {
+      if (typeof PDA_storage !== "undefined") {
+        return String((await PDA_storage.get("od_tracker_api_key", "")) || "").trim();
+      }
+    } catch (e) {
+      console.warn("[OD Tracker] Could not read stored API key:", e);
+    }
+    return "";
+  }
+
+  async function saveStoredApiKey(key) {
+    try {
+      if (typeof PDA_storage !== "undefined") {
+        await PDA_storage.set("od_tracker_api_key", String(key || "").trim());
+      } else {
+        localStorage.setItem("od_tracker_api_key", String(key || "").trim());
+      }
+    } catch (e) {
+      console.warn("[OD Tracker] Could not save API key:", e);
+    }
+  }
+
+  function effectiveKey() {
+    return runtimeApiKey && runtimeApiKey !== "###PDA-APIKEY###" ? runtimeApiKey : "";
+  }
+  const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
   // Current Torn API v2 dedicated user log endpoint.
-  const OD_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
-  const XANAX_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const OD_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
+  const XANAX_LOG_API_BASE = `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
   const POLL_MS = 5 * 60 * 1000;
 
   const defaultData = {
@@ -190,8 +218,8 @@
   }
 
   function getApiStartupStatus() {
-    if (PDA_API_KEY === "###PDA-APIKEY###") {
-      return "PDA key not injected";
+    if (!effectiveKey()) {
+      return "API key needed";
     }
     if (typeof PDA_httpGet !== "function") {
       return "PDA_httpGet unavailable";
@@ -203,7 +231,7 @@
     try {
       const parsed = new URL(url);
       if (!parsed.searchParams.get("key")) {
-        parsed.searchParams.set("key", PDA_API_KEY);
+        parsed.searchParams.set("key", effectiveKey());
       }
       return parsed.toString();
     } catch {
@@ -212,7 +240,7 @@
   }
 
   async function fetchODLogs() {
-    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+    if (!effectiveKey()) return null;
     const response = await requestJson(OD_LOG_API_BASE);
 
     if (response?.error) {
@@ -286,7 +314,7 @@
 
     const odTime = new Date(data.lastOD).getTime();
     if (!Number.isFinite(odTime)) return null;
-    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+    if (!effectiveKey() || effectiveKey() === "###PDA-APIKEY###") return null;
 
     let url = `${XANAX_LOG_API_BASE}&from=${Math.floor(odTime / 1000)}`;
     let total = 0;
@@ -336,7 +364,7 @@
   }
 
   async function fetchEvents() {
-    if (!PDA_API_KEY || PDA_API_KEY === "###PDA-APIKEY###") return null;
+    if (!effectiveKey() || effectiveKey() === "###PDA-APIKEY###") return null;
 
     try {
       if (typeof PDA_httpGet === "function") {
@@ -503,6 +531,9 @@
         `💊 Xanax since tracking started: ${Number(data.xanaxSinceOD) || 0}`;
     }
 
+    const apiKeyButton = root.querySelector(".odt-api-key-button");
+    if (apiKeyButton) apiKeyButton.textContent = effectiveKey() ? "🔑 Change API Key" : "🔑 Set API Key";
+
     const apiStatus = root.querySelector(".odt-api-status");
     if (apiStatus) {
       if (data.apiStatus === "Error" && data.apiError) {
@@ -553,6 +584,7 @@
         </div>
         <div class="odt-history"></div>
         <div class="odt-api-note">Xanax count uses Torn log entries. API: <span class="odt-api-status">Not checked</span></div>
+        <button class="odt-action odt-api-key-button" data-action="apikey" style="margin-top:6px;width:100%;">🔑 Set API Key</button>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
@@ -572,7 +604,19 @@
 
       const action = button.dataset.action;
 
-      if (action === "record") {
+      if (action === "apikey") {
+        const value = prompt("Paste your Torn API key here.\n\nIt is stored only inside this script's local PDA storage and is not sent anywhere except api.torn.com.", "");
+        if (value && value.trim()) {
+          runtimeApiKey = value.trim();
+          await saveStoredApiKey(runtimeApiKey);
+          data.apiStatus = "Not checked";
+          data.apiError = null;
+          await scanODLogs(data);
+          await syncXanaxCount(data);
+          await render(data);
+        }
+        return;
+      } else if (action === "record") {
         if (confirm("Record an overdose now?")) {
           await setLastOD(new Date().toISOString(), data);
         }
@@ -616,6 +660,7 @@
 
   async function init() {
     const data = await loadData();
+    runtimeApiKey = (await getStoredApiKey()) || PDA_API_KEY;
     data.apiStatus = getApiStartupStatus();
     if (data.apiStatus !== "Not checked") {
       await saveData(data);
