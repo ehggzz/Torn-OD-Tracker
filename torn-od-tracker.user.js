@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.3.0
+// @version      0.3.1
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
   const EVENTS_API_URL = `https://api.torn.com/user/?selections=events&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
-  const STATS_API_BASE = `https://api.torn.com/user/?selections=personalstats&stat=xantaken&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
+  const STATS_API_BASE = `https://api.torn.com/v2/user/personalstats?stat=xantaken&key=${encodeURIComponent(PDA_API_KEY)}&comment=TornODTracker`;
   const POLL_MS = 5 * 60 * 1000;
 
   const defaultData = {
