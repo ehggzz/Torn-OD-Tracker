@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.1
+// @version      0.6.2
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -19,23 +19,36 @@
   async function getStoredApiKey() {
     try {
       if (typeof PDA_storage !== "undefined") {
-        return String((await PDA_storage.get("od_tracker_api_key", "")) || "").trim();
+        const value = String((await PDA_storage.get("od_tracker_api_key", "")) || "").trim();
+        if (value) return value;
       }
     } catch (e) {
-      console.warn("[OD Tracker] Could not read stored API key:", e);
+      console.warn("[OD Tracker] Could not read PDA API key storage:", e);
     }
-    return "";
+
+    try {
+      return String(localStorage.getItem("od_tracker_api_key") || "").trim();
+    } catch (e) {
+      console.warn("[OD Tracker] Could not read browser API key storage:", e);
+      return "";
+    }
   }
 
   async function saveStoredApiKey(key) {
+    const value = String(key || "").trim();
+
     try {
       if (typeof PDA_storage !== "undefined") {
-        await PDA_storage.set("od_tracker_api_key", String(key || "").trim());
-      } else {
-        localStorage.setItem("od_tracker_api_key", String(key || "").trim());
+        await PDA_storage.set("od_tracker_api_key", value);
       }
     } catch (e) {
-      console.warn("[OD Tracker] Could not save API key:", e);
+      console.warn("[OD Tracker] Could not save PDA API key storage:", e);
+    }
+
+    try {
+      localStorage.setItem("od_tracker_api_key", value);
+    } catch (e) {
+      console.warn("[OD Tracker] Could not save browser API key storage:", e);
     }
   }
 
@@ -538,7 +551,7 @@
     }
 
     const apiKeyButton = root.querySelector(".odt-api-key-button");
-    if (apiKeyButton) apiKeyButton.textContent = effectiveKey() ? "🔑 Change API Key" : "🔑 Set API Key";
+    if (apiKeyButton) apiKeyButton.textContent = effectiveKey() ? "Save Key" : "Save Key";
 
     const apiStatus = root.querySelector(".odt-api-status");
     if (apiStatus) {
@@ -590,7 +603,11 @@
         </div>
         <div class="odt-history"></div>
         <div class="odt-api-note">Xanax count uses Torn log entries. API: <span class="odt-api-status">Not checked</span></div>
-        <button class="odt-action odt-api-key-button" data-action="apikey" style="margin-top:6px;width:100%;">🔑 Set API Key</button>
+        <div class="odt-api-key-row" style="display:flex;gap:6px;margin-top:6px;">
+          <input class="odt-api-key-input" type="password" autocomplete="off" autocapitalize="none" spellcheck="false"
+            placeholder="Paste Torn API key" style="flex:1;min-width:0;border:1px solid #444;border-radius:3px;padding:7px 8px;background:#1b1b1b;color:#ddd;font-size:11px;">
+          <button class="odt-action odt-api-key-button" data-action="apikey" style="width:92px;">Save Key</button>
+        </div>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
@@ -611,16 +628,28 @@
       const action = button.dataset.action;
 
       if (action === "apikey") {
-        const value = prompt("Paste your Torn API key here.\n\nIt is stored only inside this script's local PDA storage and is not sent anywhere except api.torn.com.", "");
-        if (value && value.trim()) {
-          runtimeApiKey = value.trim();
-          await saveStoredApiKey(runtimeApiKey);
-          data.apiStatus = "Not checked";
-          data.apiError = null;
-          await scanODLogs(data);
-          await syncXanaxCount(data);
+        const input = root.querySelector(".odt-api-key-input");
+        const value = String(input?.value || "").trim();
+
+        if (!value) {
+          data.apiStatus = "Error";
+          data.apiError = { code: "LOCAL", error: "No API key entered" };
+          await saveData(data);
           await render(data);
+          return;
         }
+
+        runtimeApiKey = value;
+        await saveStoredApiKey(runtimeApiKey);
+        data.apiStatus = "Checking...";
+        data.apiError = null;
+        await render(data);
+
+        await scanODLogs(data);
+        await syncXanaxCount(data);
+        await render(data);
+
+        if (input) input.value = "";
         return;
       } else if (action === "record") {
         if (confirm("Record an overdose now?")) {
