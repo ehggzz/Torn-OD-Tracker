@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.6
+// @version      0.6.7
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
@@ -111,6 +111,21 @@
       console.warn("[OD Tracker] PDA storage write failed:", e);
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }
+
+  // Torn does not expose a per-player Xanax OD probability directly.
+  // Current community guidance puts the base Xanax OD chance at roughly 3%.
+  // Faction Toleration and 7* Nightclub modifiers are not automatically
+  // detected yet, so the tracker labels this as an estimate.
+  const BASE_XANAX_OD_CHANCE = 0.03;
+
+  function formatPercent(value) {
+    return `${(value * 100).toFixed(value * 100 < 1 ? 2 : 1)}%`;
+  }
+
+  function cumulativeODChance(count) {
+    const n = Math.max(0, Number(count) || 0);
+    return 1 - Math.pow(1 - BASE_XANAX_OD_CHANCE, n);
   }
 
   function formatDuration(ms) {
@@ -600,8 +615,13 @@
       root.querySelector(".odt-status").textContent = "since last overdose";
       root.querySelector(".odt-last").textContent =
         `Last OD: ${formatDate(data.lastOD)}`;
+      const xanaxCount = Number(data.xanaxSinceOD) || 0;
       root.querySelector(".odt-xanax").textContent =
-        `💊 Xanax since OD: ${Number(data.xanaxSinceOD) || 0}`;
+        `💊 Xanax since OD: ${xanaxCount}`;
+      root.querySelector(".odt-chance").textContent =
+        `🎲 Estimated OD chance per Xanax: ~${formatPercent(BASE_XANAX_OD_CHANCE)}`;
+      root.querySelector(".odt-cumulative").textContent =
+        `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount))}`;
     } else {
       root.querySelector(".odt-time").textContent = "Previous OD unknown";
       root.querySelector(".odt-status").textContent =
@@ -609,8 +629,13 @@
           ? `Tracking since ${formatDate(data.trackingStarted)}`
           : "Tracking has not started";
       root.querySelector(".odt-last").textContent = "";
+      const xanaxCount = Number(data.xanaxSinceOD) || 0;
       root.querySelector(".odt-xanax").textContent =
-        `💊 Xanax since tracking started: ${Number(data.xanaxSinceOD) || 0}`;
+        `💊 Xanax since tracking started: ${xanaxCount}`;
+      root.querySelector(".odt-chance").textContent =
+        `🎲 Estimated OD chance per Xanax: ~${formatPercent(BASE_XANAX_OD_CHANCE)}`;
+      root.querySelector(".odt-cumulative").textContent =
+        `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount))}`;
     }
 
     const apiKeyButton = root.querySelector(".odt-api-key-button");
@@ -657,6 +682,9 @@
           <div class="odt-status">Loading…</div>
           <div class="odt-last"></div>
           <div class="odt-stat odt-xanax">💊 Xanax since OD: 0</div>
+          <div class="odt-stat odt-chance">🎲 Estimated OD chance per Xanax: ~3.0%</div>
+          <div class="odt-stat odt-cumulative">📈 Cumulative chance across these 0 Xanax: 0.0%</div>
+          <div class="odt-muted" style="margin-top:3px;">Base estimate; faction/nightclub reductions aren't included yet.</div>
         </div>
         <div class="odt-buttons">
           <button class="odt-action" data-action="record">💀 Record OD</button>
