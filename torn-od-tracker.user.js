@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.3.1
+// @version      0.3.2
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @match        https://www.torn.com/*
@@ -197,8 +197,23 @@
         return null;
       }
 
-      const value = Number(response?.personalstats?.xantaken);
-      return Number.isFinite(value) ? value : null;
+      // v2 returns current stats as an object, but historical stats are
+      // returned as an array of { name, value, timestamp } objects.
+      // Support both shapes (and a few harmless variants) so xantaken
+      // does not silently turn into NaN.
+      const stats = response?.personalstats;
+
+      if (Array.isArray(stats)) {
+        const entry = stats.find(item => item?.name === "xantaken");
+        const value = Number(entry?.value);
+        return Number.isFinite(value) ? value : null;
+      }
+
+      const direct = Number(stats?.xantaken);
+      if (Number.isFinite(direct)) return direct;
+
+      const nested = Number(stats?.xantaken?.value);
+      return Number.isFinite(nested) ? nested : null;
     } catch (e) {
       console.warn("[OD Tracker] Personal stats request failed:", e);
       return null;
