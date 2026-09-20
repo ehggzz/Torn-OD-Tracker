@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.5
+// @version      0.6.6
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
@@ -343,11 +343,22 @@
     const logs = getLogList(response);
     if (!logs.length) return false;
 
+    let changed = false;
+
+    const latestOD = [...logs].reverse().find(log => log.id === 2291);
+
+    if (!data.lastOD && latestOD) {
+      data.lastOD = new Date(latestOD.timestamp).toISOString();
+      data.xanaxSinceOD = 0;
+      data.xanaxBaseline = null;
+      data.xanaxBaselineForOD = null;
+      data.eventCheckpoint = latestOD.timestamp;
+      changed = true;
+    }
+
     const baseTime = data.lastOD
       ? new Date(data.lastOD).getTime()
       : new Date(data.trackingStarted || Date.now()).getTime();
-
-    let changed = false;
 
     for (const log of logs) {
       if (log.timestamp <= baseTime || log.id !== 2291) continue;
@@ -379,7 +390,7 @@
     if (!Number.isFinite(odTime)) return null;
     if (!effectiveKey() || effectiveKey() === "###PDA-APIKEY###") return null;
 
-    let url = `${xanaxLogApiUrl()}&from=${Math.floor(odTime / 1000)}`;
+    let url = `https://api.torn.com/v2/user/log?log=2290&limit=100&key=${encodeURIComponent(effectiveKey())}&from=${Math.floor(odTime / 1000)}&comment=TornODTracker`;
     let total = 0;
     let pages = 0;
     const seenPages = new Set();
@@ -401,7 +412,7 @@
       for (const log of getLogList(response)) {
         // The overdose-causing dose is at the OD timestamp itself.
         // Only count Xanax uses strictly after the recorded OD.
-        if (log.timestamp > odTime && (log.id === 2290 || log.id === 2291)) {
+        if (log.timestamp > odTime && log.id === 2290) {
           total++;
         }
       }
