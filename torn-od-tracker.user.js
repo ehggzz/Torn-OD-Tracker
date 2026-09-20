@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.7
+// @version      0.6.8
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
@@ -70,6 +70,9 @@
   function keyInfoApiUrl() {
     return `https://api.torn.com/key/?selections=info&key=${encodeURIComponent(effectiveKey())}&comment=ODTracker`;
   }
+  function perksApiUrl() {
+    return `https://api.torn.com/v2/user/perks?comment=TornODTracker`;
+  }
   const POLL_MS = 5 * 60 * 1000;
 
   const defaultData = {
@@ -81,7 +84,10 @@
     xanaxBaseline: null,
     xanaxBaselineForOD: null,
     apiStatus: "Not checked",
-    apiError: null
+    apiError: null,
+    odFactionReduction: 0,
+    odNightclubReduction: 0,
+    odPerksStatus: "Not checked"
   };
 
   async function loadData() {
@@ -120,12 +126,50 @@
   const BASE_XANAX_OD_CHANCE = 0.03;
 
   function formatPercent(value) {
-    return `${(value * 100).toFixed(value * 100 < 1 ? 2 : 1)}%`;
+    const percent = value * 100;
+    return `${percent.toFixed(percent < 1 ? 2 : 1)}%`;
   }
 
-  function cumulativeODChance(count) {
+  function currentODChance(data) {
+    const factionReduction = Math.min(0.30, Math.max(0, Number(data.odFactionReduction) || 0));
+    const nightclubReduction = Math.min(0.50, Math.max(0, Number(data.odNightclubReduction) || 0));
+    return BASE_XANAX_OD_CHANCE * (1 - factionReduction) * (1 - nightclubReduction);
+  }
+
+  function cumulativeODChance(count, chance = BASE_XANAX_OD_CHANCE) {
     const n = Math.max(0, Number(count) || 0);
-    return 1 - Math.pow(1 - BASE_XANAX_OD_CHANCE, n);
+    return 1 - Math.pow(1 - chance, n);
+  }
+
+  function parsePerkReduction(text, fallback = 0) {
+    const value = String(text || "");
+    const match = value.match(/(\\d+(?:\\.\\d+)?)\\s*%/);
+    if (!match) return fallback;
+    return Math.min(1, Math.max(0, Number(match[1]) / 100));
+  }
+
+  async function scanODPerks(data) {
+    if (!effectiveKey()) return false;
+
+    const response = await requestJson(perksApiUrl());
+    if (!response || response.error || !response.perks) {
+      data.odPerksStatus = response?.error ? "Unavailable" : "No perk data";
+      await saveData(data);
+      return false;
+    }
+
+    const factionPerks = Array.isArray(response.perks.faction) ? response.perks.faction : [];
+    const jobPerks = Array.isArray(response.perks.job) ? response.perks.job : [];
+
+    const factionOD = factionPerks.find(perk => /overdos/i.test(String(perk)));
+    const jobTolerance = jobPerks.find(perk => /toleran/i.test(String(perk)) && /overdos|drug/i.test(String(perk)));
+
+    data.odFactionReduction = factionOD ? parsePerkReduction(factionOD, 0.30) : 0;
+    data.odNightclubReduction = jobTolerance ? parsePerkReduction(jobTolerance, 0.50) : 0;
+    data.odPerksStatus = "Connected";
+
+    await saveData(data);
+    return true;
   }
 
   function formatDuration(ms) {
@@ -618,10 +662,13 @@
       const xanaxCount = Number(data.xanaxSinceOD) || 0;
       root.querySelector(".odt-xanax").textContent =
         `💊 Xanax since OD: ${xanaxCount}`;
+      const odChance = currentODChance(data);
       root.querySelector(".odt-chance").textContent =
-        `🎲 Estimated OD chance per Xanax: ~${formatPercent(BASE_XANAX_OD_CHANCE)}`;
+        `🎲 Estimated OD chance per Xanax: ~${formatPercent(odChance)}`;
       root.querySelector(".odt-cumulative").textContent =
-        `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount))}`;
+        `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount, odChance))}`;
+      root.querySelector(".odt-reductions").textContent =
+        `🛡️ Reductions: Faction ${formatPercent(Number(data.odFactionReduction) || 0)} • Nightclub ${formatPercent(Number(data.odNightclubReduction) || 0)}`;
     } else {
       root.querySelector(".odt-time").textContent = "Previous OD unknown";
       root.querySelector(".odt-status").textContent =
@@ -632,10 +679,13 @@
       const xanaxCount = Number(data.xanaxSinceOD) || 0;
       root.querySelector(".odt-xanax").textContent =
         `💊 Xanax since tracking started: ${xanaxCount}`;
+      const odChance = currentODChance(data);
       root.querySelector(".odt-chance").textContent =
-        `🎲 Estimated OD chance per Xanax: ~${formatPercent(BASE_XANAX_OD_CHANCE)}`;
+        `🎲 Estimated OD chance per Xanax: ~${formatPercent(odChance)}`;
       root.querySelector(".odt-cumulative").textContent =
-        `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount))}`;
+        `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount, odChance))}`;
+      root.querySelector(".odt-reductions").textContent =
+        `🛡️ Reductions: Faction ${formatPercent(Number(data.odFactionReduction) || 0)} • Nightclub ${formatPercent(Number(data.odNightclubReduction) || 0)}`;
     }
 
     const apiKeyButton = root.querySelector(".odt-api-key-button");
@@ -684,7 +734,8 @@
           <div class="odt-stat odt-xanax">💊 Xanax since OD: 0</div>
           <div class="odt-stat odt-chance">🎲 Estimated OD chance per Xanax: ~3.0%</div>
           <div class="odt-stat odt-cumulative">📈 Cumulative chance across these 0 Xanax: 0.0%</div>
-          <div class="odt-muted" style="margin-top:3px;">Base estimate; faction/nightclub reductions aren't included yet.</div>
+          <div class="odt-stat odt-reductions">🛡️ Reductions: Faction 0.0% • Nightclub 0.0%</div>
+          <div class="odt-muted" style="margin-top:3px;">Base estimate adjusted automatically from your active Torn perks.</div>
         </div>
         <div class="odt-buttons">
           <button class="odt-action" data-action="record">💀 Record OD</button>
@@ -807,6 +858,8 @@
       await scanEvents(data);
     }
     await syncXanaxCount(data);
+    await scanODPerks(data);
+    await render(data);
 
     setInterval(async () => {
       const latestLogResult = await scanODLogs(data);
@@ -814,6 +867,7 @@
         await scanEvents(data);
       }
       await syncXanaxCount(data);
+      await scanODPerks(data);
       await render(data);
     }, POLL_MS);
 
