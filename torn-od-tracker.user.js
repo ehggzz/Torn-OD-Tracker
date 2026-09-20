@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.3
+// @version      0.6.4
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
@@ -62,10 +62,10 @@
   }
   // Current Torn API v2 dedicated user log endpoint.
   function odLogApiUrl() {
-    return `https://api.torn.com/v2/user/log?log=2291&limit=100&comment=TornODTracker`;
+    return `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
   }
   function xanaxLogApiUrl() {
-    return `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&comment=TornODTracker`;
+    return `https://api.torn.com/v2/user/log?log=2290,2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
   }
   const POLL_MS = 5 * 60 * 1000;
 
@@ -220,14 +220,19 @@
         "Authorization": `ApiKey ${key}`
       };
 
-      if (typeof PDA_httpGet === "function") {
-        const result = await PDA_httpGet(url, headers);
-        const text = result?.responseText ?? result;
-        return typeof text === "string" ? JSON.parse(text) : text;
-      }
+      const request = typeof PDA_httpGet === "function"
+        ? PDA_httpGet(url, headers)
+        : fetch(url, { headers });
 
-      const response = await fetch(url, { headers });
-      return await response.json();
+      const result = await Promise.race([
+        request,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Torn API request timed out after 15 seconds")), 15000)
+        )
+      ]);
+
+      const text = result?.responseText ?? result;
+      return typeof text === "string" ? JSON.parse(text) : await result.json();
     } catch (e) {
       console.warn("[OD Tracker] API request failed:", e);
       return { error: { code: "LOCAL", error: e?.message || "Request failed" } };
