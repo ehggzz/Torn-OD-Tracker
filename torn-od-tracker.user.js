@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.6.8
+// @version      0.6.9
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Torn-OD-Tracker/main/torn-od-tracker.user.js
@@ -73,6 +73,9 @@
   function perksApiUrl() {
     return `https://api.torn.com/v2/user/perks?comment=TornODTracker`;
   }
+  function jobApiUrl() {
+    return `https://api.torn.com/v2/user/job?comment=TornODTracker`;
+  }
   const POLL_MS = 5 * 60 * 1000;
 
   const defaultData = {
@@ -87,7 +90,9 @@
     apiError: null,
     odFactionReduction: 0,
     odNightclubReduction: 0,
-    odPerksStatus: "Not checked"
+    odPerksStatus: "Not checked",
+    odJobStatus: "Not checked",
+    odNightclubActive: false
   };
 
   async function loadData() {
@@ -120,10 +125,10 @@
   }
 
   // Torn does not expose a per-player Xanax OD probability directly.
-  // Current community guidance puts the base Xanax OD chance at roughly 3%.
+  // Current community guidance puts the base Xanax OD chance at roughly 2%.
   // Faction Toleration and 7* Nightclub modifiers are not automatically
   // detected yet, so the tracker labels this as an estimate.
-  const BASE_XANAX_OD_CHANCE = 0.03;
+  const BASE_XANAX_OD_CHANCE = 0.02;
 
   function formatPercent(value) {
     const percent = value * 100;
@@ -159,117 +164,34 @@
     }
 
     const factionPerks = Array.isArray(response.perks.faction) ? response.perks.faction : [];
-    const jobPerks = Array.isArray(response.perks.job) ? response.perks.job : [];
-
     const factionOD = factionPerks.find(perk => /overdos/i.test(String(perk)));
-    const jobTolerance = jobPerks.find(perk => /toleran/i.test(String(perk)) && /overdos|drug/i.test(String(perk)));
 
-    data.odFactionReduction = factionOD ? parsePerkReduction(factionOD, 0.30) : 0;
-    data.odNightclubReduction = jobTolerance ? parsePerkReduction(jobTolerance, 0.50) : 0;
+    // Torn's current user/perks endpoint returns active faction perks as strings.
+    // Overdosing is 3% reduction per upgrade, capped at 30%.
+    // We extract the percentage when Torn provides it; otherwise a matching
+    // Overdosing perk is treated as the maximum only as a fallback.
+    data.odFactionReduction = factionOD
+      ? Math.min(0.30, Math.max(0, parsePerkReduction(factionOD, 0.30)))
+      : 0;
     data.odPerksStatus = "Connected";
+
+    const jobResponse = await requestJson(jobApiUrl());
+    if (jobResponse && !jobResponse.error && jobResponse.job) {
+      const job = jobResponse.job;
+      data.odNightclubActive =
+        job.type === "company" &&
+        /nightclub/i.test(String(job.name || "")) &&
+        Number(job.rating) >= 7;
+      data.odJobStatus = "Connected";
+    } else {
+      data.odNightclubActive = false;
+      data.odJobStatus = jobResponse?.error ? "Unavailable" : "No job data";
+    }
+
+    data.odNightclubReduction = data.odNightclubActive ? 0.50 : 0;
 
     await saveData(data);
     return true;
-  }
-
-  function formatDuration(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return "0m";
-    const totalMinutes = Math.floor(ms / 60000);
-    const days = Math.floor(totalMinutes / 1440);
-    const hours = Math.floor((totalMinutes % 1440) / 60);
-    const minutes = totalMinutes % 60;
-    if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
-  }
-
-  function formatDate(value) {
-    if (!value) return "Unknown";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return "Unknown";
-    return d.toLocaleString("en-GB", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false
-    });
-  }
-
-  function parseUserDateTime(value) {
-    const text = String(value || "").trim();
-    const uk = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
-
-    if (uk) {
-      const day = Number(uk[1]);
-      const month = Number(uk[2]);
-      const year = Number(uk[3]);
-      const hour = uk[4] === undefined ? 0 : Number(uk[4]);
-      const minute = uk[5] === undefined ? 0 : Number(uk[5]);
-
-      if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59) return null;
-
-      const d = new Date(year, month - 1, day, hour, minute, 0, 0);
-      if (
-        d.getFullYear() !== year ||
-        d.getMonth() !== month - 1 ||
-        d.getDate() !== day ||
-        d.getHours() !== hour ||
-        d.getMinutes() !== minute
-      ) return null;
-
-      return d;
-    }
-
-    const iso = new Date(text);
-    return Number.isNaN(iso.getTime()) ? null : iso;
-  }
-
-  function normaliseHistory(data) {
-    if (!Array.isArray(data.history)) data.history = [];
-
-    data.history = data.history.map(entry => {
-      if (typeof entry === "string") return { od: entry, xanax: null };
-      return {
-        od: entry?.od || entry?.lastOD || null,
-        xanax: Number.isFinite(Number(entry?.xanax)) ? Number(entry.xanax) : null
-      };
-    }).filter(entry => entry.od);
-  }
-
-  function addHistoryEntry(data, odIso, xanaxCount) {
-    normaliseHistory(data);
-    const existing = data.history.find(x => x.od === odIso);
-    if (existing) {
-      if (xanaxCount !== null && xanaxCount !== undefined) existing.xanax = xanaxCount;
-    } else {
-      data.history.unshift({ od: odIso, xanax: xanaxCount });
-    }
-    data.history = data.history.slice(0, 50);
-  }
-
-  function isXanaxUse(eventText) {
-    return typeof eventText === "string" &&
-      /\b(?:popped?|took)\b.*\bxanax\b/i.test(eventText);
-  }
-
-  function isXanaxOD(eventText) {
-    return typeof eventText === "string" &&
-      /overdos/i.test(eventText) &&
-      /xanax/i.test(eventText);
-  }
-
-  function getEventList(events) {
-    if (!events) return [];
-    const list = Array.isArray(events) ? events : Object.values(events);
-    return list
-      .map(e => ({
-        timestamp: Number(e?.timestamp) * 1000,
-        text: typeof e?.event === "string" ? e.event : ""
-      }))
-      .filter(e => Number.isFinite(e.timestamp) && e.timestamp > 0)
-      .sort((a, b) => a.timestamp - b.timestamp);
   }
 
   async function requestJson(url) {
@@ -667,8 +589,12 @@
         `🎲 Estimated OD chance per Xanax: ~${formatPercent(odChance)}`;
       root.querySelector(".odt-cumulative").textContent =
         `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount, odChance))}`;
+      const factionReduction = Number(data.odFactionReduction) || 0;
+      const nightclubReduction = Number(data.odNightclubReduction) || 0;
       root.querySelector(".odt-reductions").textContent =
-        `🛡️ Reductions: Faction ${formatPercent(Number(data.odFactionReduction) || 0)} • Nightclub ${formatPercent(Number(data.odNightclubReduction) || 0)}`;
+        nightclubReduction > 0
+          ? `🛡️ Reductions: Faction ${formatPercent(factionReduction)} • Nightclub 50.0%`
+          : `🛡️ Faction reduction: ${formatPercent(factionReduction)}`;
     } else {
       root.querySelector(".odt-time").textContent = "Previous OD unknown";
       root.querySelector(".odt-status").textContent =
@@ -684,8 +610,12 @@
         `🎲 Estimated OD chance per Xanax: ~${formatPercent(odChance)}`;
       root.querySelector(".odt-cumulative").textContent =
         `📈 Cumulative chance across these ${xanaxCount} Xanax: ${formatPercent(cumulativeODChance(xanaxCount, odChance))}`;
+      const factionReduction = Number(data.odFactionReduction) || 0;
+      const nightclubReduction = Number(data.odNightclubReduction) || 0;
       root.querySelector(".odt-reductions").textContent =
-        `🛡️ Reductions: Faction ${formatPercent(Number(data.odFactionReduction) || 0)} • Nightclub ${formatPercent(Number(data.odNightclubReduction) || 0)}`;
+        nightclubReduction > 0
+          ? `🛡️ Reductions: Faction ${formatPercent(factionReduction)} • Nightclub 50.0%`
+          : `🛡️ Faction reduction: ${formatPercent(factionReduction)}`;
     }
 
     const apiKeyButton = root.querySelector(".odt-api-key-button");
@@ -732,10 +662,10 @@
           <div class="odt-status">Loading…</div>
           <div class="odt-last"></div>
           <div class="odt-stat odt-xanax">💊 Xanax since OD: 0</div>
-          <div class="odt-stat odt-chance">🎲 Estimated OD chance per Xanax: ~3.0%</div>
+          <div class="odt-stat odt-chance">🎲 Estimated OD chance per Xanax: ~2.0%</div>
           <div class="odt-stat odt-cumulative">📈 Cumulative chance across these 0 Xanax: 0.0%</div>
           <div class="odt-stat odt-reductions">🛡️ Reductions: Faction 0.0% • Nightclub 0.0%</div>
-          <div class="odt-muted" style="margin-top:3px;">Base estimate adjusted automatically from your active Torn perks.</div>
+          <div class="odt-muted" style="margin-top:3px;">Base estimate adjusted automatically from your active Torn perks and current job.</div>
         </div>
         <div class="odt-buttons">
           <button class="odt-action" data-action="record">💀 Record OD</button>
