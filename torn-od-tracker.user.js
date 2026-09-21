@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.7.0
+// @version      0.8.0
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -18,6 +18,7 @@
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
   let runtimeApiKey = PDA_API_KEY;
+  let ownTornId = null;
 
   async function getStoredApiKey() {
     try {
@@ -253,6 +254,19 @@
       data.apiStatus = "Connected";
       data.apiError = null;
     }
+  }
+
+  async function getOwnTornId() {
+    if (!effectiveKey()) return null;
+    const response = await requestJson(keyInfoApiUrl());
+    const id = Number(response?.info?.user_id ?? response?.user_id);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }
+
+  function isOwnProfilePage() {
+    if (!/\/profiles\.php/i.test(location.pathname)) return false;
+    const xid = Number(new URLSearchParams(location.search).get("XID"));
+    return Number.isFinite(xid) && xid > 0 && ownTornId !== null && xid === ownTornId;
   }
 
   function getApiStartupStatus() {
@@ -672,6 +686,7 @@
             placeholder="Paste Torn API key" style="flex:1;min-width:0;border:1px solid #444;border-radius:3px;padding:7px 8px;background:#1b1b1b;color:#ddd;font-size:11px;">
           <button class="odt-action odt-api-key-button" data-action="apikey" style="width:92px;">Save Key</button>
         </div>
+        <button class="odt-action odt-danger odt-clear-key" data-action="clear-key" style="width:100%;margin-top:6px;">🔐 Clear API Key</button>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
@@ -691,7 +706,23 @@
 
       const action = button.dataset.action;
 
-      if (action === "apikey") {
+      if (action === "clear-key") {
+        if (!effectiveKey()) {
+          alert("There is no saved API key to clear.");
+          return;
+        }
+        if (confirm("Clear the saved Torn API key from OD Tracker?")) {
+          runtimeApiKey = PDA_API_KEY;
+          await saveStoredApiKey("");
+          data.apiStatus = "API key cleared";
+          data.apiError = null;
+          await saveData(data);
+          const input = root.querySelector(".odt-api-key-input");
+          if (input) input.value = "";
+          await render(data);
+        }
+        return;
+      } else if (action === "apikey") {
         const input = root.querySelector(".odt-api-key-input");
         const value = String(input?.value || "").trim();
 
@@ -773,6 +804,8 @@
       await saveData(data);
     }
 
+    ownTornId = await getOwnTornId();
+
     // Use Torn's dedicated Xanax-overdose log as the primary OD source.
     // If the key cannot access user/log, fall back to the events feed.
     const logResult = await scanODLogs(data);
@@ -791,7 +824,7 @@
     }, POLL_MS);
 
     // Only show the visual widget on profile pages.
-    if (!/\/profiles\.php/i.test(location.pathname)) return;
+    if (!isOwnProfilePage()) return;
 
     let attempts = 0;
     const timer = setInterval(async () => {
