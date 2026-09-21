@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.2
+// @version      0.8.3
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -553,6 +553,8 @@
       #${ROOT_ID} .odt-history-xan { opacity:.7; margin-left:5px; }
       #${ROOT_ID} .odt-danger { color:#f08a8a !important; }
       #${ROOT_ID} .odt-api-note { margin-top:8px; font-size:10px; opacity:.55; }
+      #${ROOT_ID} .odt-key-builder { display:block; margin-top:7px; color:#bbb; font-size:11px; text-decoration:underline; text-align:center; }
+      #${ROOT_ID} .odt-key-builder:hover { color:#fff; }
     `;
     document.head.appendChild(style);
   }
@@ -673,6 +675,7 @@
           <button class="odt-action odt-api-key-button" data-action="apikey" style="width:92px;">Save Key</button>
         </div>
         <button class="odt-action odt-danger odt-clear-key" data-action="clear-key" style="width:100%;margin-top:6px;">🔐 Clear API Key</button>
+        <a class="odt-key-builder" href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Torn%20OD%20Tracker&user=log" target="_blank" rel="noopener">🔑 Create a custom OD Tracker API key</a>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
