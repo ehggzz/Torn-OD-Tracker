@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.1
+// @version      0.8.2
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -18,7 +18,6 @@
   const ROOT_ID = "od-tracker-root";
   const PDA_API_KEY = "###PDA-APIKEY###";
   let runtimeApiKey = PDA_API_KEY;
-  let ownTornId = null;
 
   async function getStoredApiKey() {
     try {
@@ -254,19 +253,6 @@
       data.apiStatus = "Connected";
       data.apiError = null;
     }
-  }
-
-  async function getOwnTornId() {
-    if (!effectiveKey()) return null;
-    const response = await requestJson(keyInfoApiUrl());
-    const id = Number(response?.user?.id ?? response?.info?.user?.id ?? response?.user_id ?? response?.info?.user_id);
-    return Number.isFinite(id) && id > 0 ? id : null;
-  }
-
-  function isOwnProfilePage() {
-    if (!/\/profiles\.php/i.test(location.pathname)) return false;
-    const xid = Number(new URLSearchParams(location.search).get("XID"));
-    return Number.isFinite(xid) && xid > 0 && ownTornId !== null && xid === ownTornId;
   }
 
   function getApiStartupStatus() {
@@ -804,8 +790,6 @@
       await saveData(data);
     }
 
-    ownTornId = await getOwnTornId();
-
     // Use Torn's dedicated Xanax-overdose log as the primary OD source.
     // If the key cannot access user/log, fall back to the events feed.
     const logResult = await scanODLogs(data);
@@ -824,7 +808,7 @@
     }, POLL_MS);
 
     // Only show the visual widget on profile pages.
-    if (!isOwnProfilePage()) return;
+    if (!/\/profiles\.php/i.test(location.pathname)) return;
 
     let attempts = 0;
     const timer = setInterval(async () => {
