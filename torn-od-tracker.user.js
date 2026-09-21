@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.0
+// @version      0.8.1
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -259,7 +259,7 @@
   async function getOwnTornId() {
     if (!effectiveKey()) return null;
     const response = await requestJson(keyInfoApiUrl());
-    const id = Number(response?.info?.user_id ?? response?.user_id);
+    const id = Number(response?.user?.id ?? response?.info?.user?.id ?? response?.user_id ?? response?.info?.user_id);
     return Number.isFinite(id) && id > 0 ? id : null;
   }
 
