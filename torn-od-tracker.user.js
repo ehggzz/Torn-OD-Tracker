@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.4
+// @version      0.8.5
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -84,6 +84,50 @@
     return `https://api.torn.com/v2/faction/upgrades?comment=TornODTracker`;
   }
   const POLL_MS = 5 * 60 * 1000;
+  const OD_STATS_POLL_MS = 30 * 60 * 1000;
+  const COMMUNITY_XANAX_OD_RATE = 1 / 33;
+
+  function getDrugStats(response) {
+    const drugs = response?.personalstats?.drugs;
+    if (!drugs) return null;
+    return { xanax: Number(drugs.xanax) || 0, overdoses: Number(drugs.overdoses) || 0, total: Number(drugs.total) || 0 };
+  }
+
+  function getJobInfo(response) {
+    const job = response?.job;
+    if (!job) return null;
+    const typeName = String(job?.type?.name || "");
+    return { companyId: Number(job?.id) || null, companyTypeId: Number(job?.type_id) || null, companyName: String(job?.name || ""), companyTypeName: typeName, rating: Number(job?.rating) || 0, isNightclub: /nightclub/i.test(typeName) || /nightclub/i.test(String(job?.name || "")) };
+  }
+
+  function getFactionODReduction(response) {
+    const branches = [...(Array.isArray(response?.upgrades?.peace) ? response.upgrades.peace : []), ...(Array.isArray(response?.upgrades?.war) ? response.upgrades.war : [])];
+    let reduction = 0;
+    let detected = false;
+    for (const branch of branches) {
+      if (!/toleration/i.test(String(branch?.name || ""))) continue;
+      for (const upgrade of (Array.isArray(branch?.upgrades) ? branch.upgrades : [])) {
+        const text = String(upgrade?.name || "") + " " + String(upgrade?.ability || "");
+        if (/overdosing/i.test(text)) {
+          reduction = Math.min(30, Math.max(0, Number(upgrade?.level) || 0) * 3);
+          detected = true;
+        }
+      }
+    }
+    return { reduction, detected };
+  }
+
+  function calculateODChance(data) {
+    const stats = data.odChance?.drugStats;
+    if (!stats) return null;
+    const factionReduction = Math.min(30, Math.max(0, Number(data.odChance?.factionReduction) || 0));
+    const nightclubReduction = data.odChance?.nightclub7 ? 50 : 0;
+    const perDose = COMMUNITY_XANAX_OD_RATE * (1 - factionReduction / 100) * (1 - nightclubReduction / 100);
+    const doses = Math.max(0, Number(data.xanaxSinceOD) || 0);
+    const cumulative = 1 - Math.pow(1 - perDose, doses);
+    const lifetimeRate = stats.total > 0 ? stats.overdoses / stats.total : null;
+    return { perDose, cumulative, lifetimeRate, doses, factionReduction, nightclubReduction };
+  }
 
   const defaultData = {
     lastOD: null,
@@ -94,7 +138,8 @@
     xanaxBaseline: null,
     xanaxBaselineForOD: null,
     apiStatus: "Not checked",
-    apiError: null
+    apiError: null,
+    odChance: { drugStats: null, factionReduction: 0, factionDetected: false, nightclub7: false, nightclubDetected: false, lastChecked: null, error: null }
   };
 
   async function loadData() {
@@ -450,6 +495,28 @@
     return false;
   }
 
+  async function refreshODChanceData(data) {
+    if (!effectiveKey() || effectiveKey() === PDA_API_KEY) return false;
+    const [drugResponse, jobResponse, factionResponse, upgradesResponse] = await Promise.all([requestJson(personalStatsDrugsApiUrl()), requestJson(jobApiUrl()), requestJson(factionApiUrl()), requestJson(factionUpgradesApiUrl())]);
+    data.odChance = data.odChance || { ...defaultData.odChance };
+    const stats = !drugResponse?.error ? getDrugStats(drugResponse) : null;
+    const job = !jobResponse?.error ? getJobInfo(jobResponse) : null;
+    const faction = !upgradesResponse?.error ? getFactionODReduction(upgradesResponse) : { reduction: 0, detected: false };
+    if (stats) data.odChance.drugStats = stats;
+    if (job) {
+      data.odChance.nightclubDetected = job.isNightclub;
+      data.odChance.nightclub7 = job.isNightclub && job.rating >= 7;
+    }
+    if (faction.detected) {
+      data.odChance.factionReduction = faction.reduction;
+      data.odChance.factionDetected = true;
+    }
+    data.odChance.lastChecked = new Date().toISOString();
+    data.odChance.error = null;
+    await saveData(data);
+    return true;
+  }
+
   async function fetchEvents() {
     if (!effectiveKey() || effectiveKey() === "###PDA-APIKEY###") return null;
 
@@ -564,7 +631,14 @@
       #${ROOT_ID} .odt-history-row { padding:5px 0; border-bottom:1px solid #333; }
       #${ROOT_ID} .odt-history-xan { opacity:.7; margin-left:5px; }
       #${ROOT_ID} .odt-danger { color:#f08a8a !important; }
-      #${ROOT_ID} .odt-api-note { margin-top:8px; font-size:10px; opacity:.55; }
+      #od-tracker-root .odt-api-note { margin-top:8px; font-size:10px; opacity:.55; }
+      #od-tracker-root .odt-chance { margin-top:10px; border-top:1px solid #333; padding-top:9px; }
+      #od-tracker-root .odt-chance-header { width:100%; border:0; background:none; color:#ddd; text-align:left; padding:3px 0; font-size:12px; font-weight:600; cursor:pointer; }
+      #od-tracker-root .odt-chance-body { display:none; margin-top:7px; }
+      #od-tracker-root .odt-chance-body.open { display:block; }
+      #od-tracker-root .odt-chance-grid { display:grid; grid-template-columns:1fr auto; gap:4px 8px; }
+      #od-tracker-root .odt-chance-value { text-align:right; color:#fff; font-weight:600; }
+      #od-tracker-root .odt-chance-note { margin-top:8px; font-size:10px; opacity:.65; }
       #${ROOT_ID} .odt-key-builder { display:block; margin-top:7px; color:#bbb; font-size:11px; text-decoration:underline; text-align:center; }
       #${ROOT_ID} .odt-key-builder:hover { color:#fff; }
       #${ROOT_ID} .odt-api-test { margin-top:7px; }
@@ -611,8 +685,22 @@
     normaliseHistory(data);
 
     const panel = root.querySelector(".odt-panel");
-    root.querySelector(".odt-arrow").textContent =
-      panel.classList.contains("open") ? "▴" : "▾";
+    root.querySelector(".odt-arrow").textContent = panel.classList.contains("open") ? "▴" : "▾";
+
+    const chance = calculateODChance(data);
+    if (chance) {
+      root.querySelector(".odt-per-dose").textContent = (chance.perDose * 100).toFixed(2) + "%";
+      root.querySelector(".odt-cumulative").textContent = (chance.cumulative * 100).toFixed(1) + "%";
+      root.querySelector(".odt-faction").textContent = chance.factionReduction + "%";
+      root.querySelector(".odt-nightclub").textContent = chance.nightclubReduction + "%";
+      root.querySelector(".odt-lifetime").textContent = chance.lifetimeRate === null ? "Unavailable" : (chance.lifetimeRate * 100).toFixed(2) + "%";
+    } else {
+      root.querySelector(".odt-per-dose").textContent = "Unavailable";
+      root.querySelector(".odt-cumulative").textContent = "Unavailable";
+      root.querySelector(".odt-faction").textContent = "Unavailable";
+      root.querySelector(".odt-nightclub").textContent = "Unavailable";
+      root.querySelector(".odt-lifetime").textContent = "Unavailable";
+    }
 
     if (data.lastOD) {
       root.querySelector(".odt-time").textContent =
@@ -692,15 +780,36 @@
           <button class="odt-action odt-api-key-button" data-action="apikey" style="width:92px;">Save Key</button>
         </div>
         <button class="odt-action odt-danger odt-clear-key" data-action="clear-key" style="width:100%;margin-top:6px;">🔐 Clear API Key</button>
-        <a class="odt-key-builder" href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Torn%20OD%20Tracker&user=log" target="_blank" rel="noopener">🔑 Create a custom OD Tracker API key</a>
+        <a class="odt-key-builder" href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Torn%20OD%20Tracker&user=log,personalstats,job&faction=upgrades" target="_blank" rel="noopener">🔑 Create a custom OD Tracker API key</a>
         <button class="odt-action odt-api-test" data-action="test-api" style="width:100%;">🧪 Test OD data access</button>
         <div class="odt-api-test-results"></div>
+        <div class="odt-chance">
+          <button class="odt-chance-header" type="button">📊 OD Chance Estimate <span class="odt-chance-arrow" style="float:right;opacity:.7;">▾</span></button>
+          <div class="odt-chance-body">
+            <div class="odt-chance-grid">
+              <span>Estimated per-Xanax chance</span><span class="odt-chance-value odt-per-dose">Checking…</span>
+              <span>Estimated chance across Xanax since OD</span><span class="odt-chance-value odt-cumulative">Checking…</span>
+              <span>Faction OD reduction</span><span class="odt-chance-value odt-faction">Checking…</span>
+              <span>7★ Nightclub reduction</span><span class="odt-chance-value odt-nightclub">Checking…</span>
+              <span>Lifetime drug OD rate</span><span class="odt-chance-value odt-lifetime">Checking…</span>
+            </div>
+            <div class="odt-chance-note">⚠️ Rough statistical estimate only. Torn overdose is random, so this cannot predict when an OD will happen. Your actual result may differ significantly.</div>
+            <div class="odt-muted" style="margin-top:6px;">Baseline uses a community-derived estimate of about 1 OD per 33 Xanax. This is not an official Torn-published probability.</div>
+          </div>
+        </div>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
 
     const header = root.querySelector(".odt-header");
     const panel = root.querySelector(".odt-panel");
+
+    const chanceHeader = root.querySelector(".odt-chance-header");
+    const chanceBody = root.querySelector(".odt-chance-body");
+    chanceHeader.addEventListener("click", () => {
+      const open = chanceBody.classList.toggle("open");
+      root.querySelector(".odt-chance-arrow").textContent = open ? "▴" : "▾";
+    });
 
     header.addEventListener("click", () => {
       const open = panel.classList.toggle("open");
@@ -838,8 +947,10 @@
       }
     });
 
+    await refreshODChanceData(data);
     await render(data);
     setInterval(() => render(data), 30000);
+    setInterval(async () => { await refreshODChanceData(data); await render(data); }, OD_STATS_POLL_MS);
   }
 
   async function init() {
@@ -862,6 +973,7 @@
       await scanEvents(data);
     }
     await syncXanaxCount(data);
+    await refreshODChanceData(data);
 
     setInterval(async () => {
       const latestLogResult = await scanODLogs(data);
