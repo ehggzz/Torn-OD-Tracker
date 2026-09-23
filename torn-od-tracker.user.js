@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.3
+// @version      0.8.4
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -70,6 +70,18 @@
   }
   function keyInfoApiUrl() {
     return `https://api.torn.com/key/?selections=info&key=${encodeURIComponent(effectiveKey())}&comment=ODTracker`;
+  }
+  function personalStatsDrugsApiUrl() {
+    return `https://api.torn.com/v2/user/personalstats?cat=drugs&comment=TornODTracker`;
+  }
+  function factionApiUrl() {
+    return `https://api.torn.com/v2/user/faction?comment=TornODTracker`;
+  }
+  function jobApiUrl() {
+    return `https://api.torn.com/v2/user/job?comment=TornODTracker`;
+  }
+  function factionUpgradesApiUrl() {
+    return `https://api.torn.com/v2/faction/upgrades?comment=TornODTracker`;
   }
   const POLL_MS = 5 * 60 * 1000;
 
@@ -555,6 +567,11 @@
       #${ROOT_ID} .odt-api-note { margin-top:8px; font-size:10px; opacity:.55; }
       #${ROOT_ID} .odt-key-builder { display:block; margin-top:7px; color:#bbb; font-size:11px; text-decoration:underline; text-align:center; }
       #${ROOT_ID} .odt-key-builder:hover { color:#fff; }
+      #${ROOT_ID} .odt-api-test { margin-top:7px; }
+      #${ROOT_ID} .odt-api-test-results { display:none; margin-top:7px; padding:7px; border:1px solid #333; border-radius:3px; background:#181818; font-size:10px; }
+      #${ROOT_ID} .odt-api-test-results.open { display:block; }
+      #${ROOT_ID} .odt-test-row { display:flex; justify-content:space-between; gap:8px; padding:2px 0; border-bottom:1px solid #292929; }
+      #${ROOT_ID} .odt-test-row:last-child { border-bottom:0; }
     `;
     document.head.appendChild(style);
   }
@@ -676,6 +693,8 @@
         </div>
         <button class="odt-action odt-danger odt-clear-key" data-action="clear-key" style="width:100%;margin-top:6px;">🔐 Clear API Key</button>
         <a class="odt-key-builder" href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Torn%20OD%20Tracker&user=log" target="_blank" rel="noopener">🔑 Create a custom OD Tracker API key</a>
+        <button class="odt-action odt-api-test" data-action="test-api" style="width:100%;">🧪 Test OD data access</button>
+        <div class="odt-api-test-results"></div>
       </div>`;
 
     findProfileInsertionPoint().prepend(root);
@@ -737,6 +756,49 @@
         await render(data);
 
         if (input) input.value = "";
+        return;
+      } else if (action === "test-api") {
+        const results = root.querySelector(".odt-api-test-results");
+        if (!effectiveKey()) {
+          if (results) {
+            results.classList.add("open");
+            results.innerHTML = '<div class="odt-muted">Save a Torn API key first.</div>';
+          }
+          return;
+        }
+
+        button.disabled = true;
+        button.textContent = "🧪 Testing…";
+
+        const tests = [
+          ["Personal drug stats", personalStatsDrugsApiUrl()],
+          ["Current faction", factionApiUrl()],
+          ["Current job", jobApiUrl()],
+          ["Faction OD upgrades", factionUpgradesApiUrl()]
+        ];
+
+        const output = [];
+        for (const [label, url] of tests) {
+          const response = await requestJson(url);
+          if (response?.error) {
+            const code = String(response.error.code ?? "?");
+            const message = String(response.error.error ?? "API error");
+            output.push({ label, ok: false, text: `❌ Error ${code}: ${message}` });
+          } else {
+            output.push({ label, ok: true, text: "✅ Accessible" });
+          }
+        }
+
+        if (results) {
+          results.classList.add("open");
+          results.innerHTML = output.map(row =>
+            `<div class="odt-test-row"><span>${row.label}</span><span>${row.text}</span></div>`
+          ).join("") +
+          '<div class="odt-muted" style="margin-top:6px;">This test only checks access. It does not display or store your API key.</div>';
+        }
+
+        button.disabled = false;
+        button.textContent = "🧪 Test OD data access";
         return;
       } else if (action === "record") {
         if (confirm("Record an overdose now?")) {
