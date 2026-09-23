@@ -61,6 +61,7 @@
   function eventsApiUrl() {
     return `https://api.torn.com/user/?selections=events&comment=TornODTracker`;
   }
+  // Current Torn API v2 dedicated user log endpoint.
   function odLogApiUrl() {
     return `https://api.torn.com/v2/user/log?log=2291&limit=100&key=${encodeURIComponent(effectiveKey())}&comment=TornODTracker`;
   }
@@ -312,15 +313,21 @@
   }
 
   function getApiStartupStatus() {
-    if (!effectiveKey()) return "API key needed";
-    if (typeof PDA_httpGet !== "function") return "PDA_httpGet unavailable";
+    if (!effectiveKey()) {
+      return "API key needed";
+    }
+    if (typeof PDA_httpGet !== "function") {
+      return "PDA_httpGet unavailable";
+    }
     return "Not checked";
   }
 
   function withKey(url) {
     try {
       const parsed = new URL(url);
-      if (!parsed.searchParams.get("key")) parsed.searchParams.set("key", effectiveKey());
+      if (!parsed.searchParams.get("key")) {
+        parsed.searchParams.set("key", effectiveKey());
+      }
       return parsed.toString();
     } catch {
       return url;
@@ -332,7 +339,6 @@
       data.apiStatus = "API key needed";
       data.apiError = { code: "LOCAL", error: "No API key" };
       await saveData(data);
-      await render(data);
       return false;
     }
 
@@ -396,6 +402,7 @@
     if (!logs.length) return false;
 
     let changed = false;
+
     const latestOD = [...logs].reverse().find(log => log.id === 2291);
 
     if (!data.lastOD && latestOD) {
@@ -417,7 +424,10 @@
       const odIso = new Date(log.timestamp).toISOString();
 
       if (data.lastOD !== odIso) {
-        if (data.lastOD) addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+        if (data.lastOD) {
+          addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+        }
+
         data.lastOD = odIso;
         data.xanaxSinceOD = 0;
         data.xanaxBaseline = null;
@@ -429,10 +439,6 @@
 
     if (changed) await saveData(data);
     return changed;
-  }
-
-  function getLogListForXanax(response) {
-    return getLogList(response);
   }
 
   async function countXanaxLogsSinceOD(data) {
@@ -461,8 +467,12 @@
         return null;
       }
 
-      for (const log of getLogListForXanax(response)) {
-        if (log.timestamp > odTime && log.id === 2290) total++;
+      for (const log of getLogList(response)) {
+        // The overdose-causing dose is at the OD timestamp itself.
+        // Only count Xanax uses strictly after the recorded OD.
+        if (log.timestamp > odTime && log.id === 2290) {
+          total++;
+        }
       }
 
       const next = response?._metadata?.links?.next;
@@ -487,17 +497,11 @@
 
   async function refreshODChanceData(data) {
     if (!effectiveKey() || effectiveKey() === PDA_API_KEY) return false;
-    const [drugResponse, jobResponse, factionResponse, upgradesResponse] = await Promise.all([
-      requestJson(personalStatsDrugsApiUrl()),
-      requestJson(jobApiUrl()),
-      requestJson(factionApiUrl()),
-      requestJson(factionUpgradesApiUrl())
-    ]);
+    const [drugResponse, jobResponse, factionResponse, upgradesResponse] = await Promise.all([requestJson(personalStatsDrugsApiUrl()), requestJson(jobApiUrl()), requestJson(factionApiUrl()), requestJson(factionUpgradesApiUrl())]);
     data.odChance = data.odChance || { ...defaultData.odChance };
     const stats = !drugResponse?.error ? getDrugStats(drugResponse) : null;
     const job = !jobResponse?.error ? getJobInfo(jobResponse) : null;
     const faction = !upgradesResponse?.error ? getFactionODReduction(upgradesResponse) : { reduction: 0, detected: false };
-
     if (stats) data.odChance.drugStats = stats;
     if (job) {
       data.odChance.nightclubDetected = job.isNightclub;
@@ -560,11 +564,16 @@
     for (const event of events) {
       if (event.timestamp <= checkpoint) continue;
 
+      // We only use the event stream to identify the exact time of an OD.
+      // Xanax totals themselves come from personalstats.xantaken.
       if (isXanaxOD(event.text)) {
         const odIso = new Date(event.timestamp).toISOString();
 
         if (data.lastOD !== odIso) {
-          if (data.lastOD) addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+          if (data.lastOD) {
+            addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+          }
+
           data.lastOD = odIso;
           data.xanaxSinceOD = 0;
           data.xanaxBaseline = null;
@@ -583,6 +592,7 @@
 
     if (changed) await saveData(data);
 
+    // Refresh the cumulative Xanax calculation after processing any new OD.
     const xanaxChanged = await syncXanaxCount(data);
     return changed || xanaxChanged;
   }
@@ -652,7 +662,9 @@
     const value = new Date(iso);
     if (Number.isNaN(value.getTime())) return;
 
-    if (data.lastOD && !preserveCount) addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+    if (data.lastOD && !preserveCount) {
+      addHistoryEntry(data, data.lastOD, Number(data.xanaxSinceOD) || 0);
+    }
 
     data.lastOD = value.toISOString();
     data.xanaxSinceOD = preserveCount ? (Number(data.xanaxSinceOD) || 0) : 0;
@@ -691,19 +703,26 @@
     }
 
     if (data.lastOD) {
-      root.querySelector(".odt-time").textContent = formatDuration(Date.now() - new Date(data.lastOD).getTime());
+      root.querySelector(".odt-time").textContent =
+        formatDuration(Date.now() - new Date(data.lastOD).getTime());
       root.querySelector(".odt-status").textContent = "since last overdose";
-      root.querySelector(".odt-last").textContent = `Last OD: ${formatDate(data.lastOD)}`;
-      root.querySelector(".odt-xanax").textContent = `💊 Xanax since OD: ${Number(data.xanaxSinceOD) || 0}`;
+      root.querySelector(".odt-last").textContent =
+        `Last OD: ${formatDate(data.lastOD)}`;
+      root.querySelector(".odt-xanax").textContent =
+        `💊 Xanax since OD: ${Number(data.xanaxSinceOD) || 0}`;
     } else {
       root.querySelector(".odt-time").textContent = "Previous OD unknown";
-      root.querySelector(".odt-status").textContent = data.trackingStarted ? `Tracking since ${formatDate(data.trackingStarted)}` : "Tracking has not started";
+      root.querySelector(".odt-status").textContent =
+        data.trackingStarted
+          ? `Tracking since ${formatDate(data.trackingStarted)}`
+          : "Tracking has not started";
       root.querySelector(".odt-last").textContent = "";
-      root.querySelector(".odt-xanax").textContent = `💊 Xanax since tracking started: ${Number(data.xanaxSinceOD) || 0}`;
+      root.querySelector(".odt-xanax").textContent =
+        `💊 Xanax since tracking started: ${Number(data.xanaxSinceOD) || 0}`;
     }
 
     const apiKeyButton = root.querySelector(".odt-api-key-button");
-    if (apiKeyButton) apiKeyButton.textContent = "Save Key";
+    if (apiKeyButton) apiKeyButton.textContent = effectiveKey() ? "Save Key" : "Save Key";
 
     const apiStatus = root.querySelector(".odt-api-status");
     if (apiStatus) {
@@ -720,7 +739,9 @@
     if (h.classList.contains("open")) {
       h.innerHTML = data.history.length
         ? data.history.map((entry, i) => {
-            const xanax = entry.xanax === null || entry.xanax === undefined ? "" : `<span class="odt-history-xan">• ${entry.xanax} Xanax</span>`;
+            const xanax = entry.xanax === null || entry.xanax === undefined
+              ? ""
+              : `<span class="odt-history-xan">• ${entry.xanax} Xanax</span>`;
             return `<div class="odt-history-row">${i + 1}. ${formatDate(entry.od)} ${xanax}</div>`;
           }).join("")
         : '<div class="odt-muted">No OD history recorded yet.</div>';
@@ -760,7 +781,6 @@
         </div>
         <button class="odt-action odt-danger odt-clear-key" data-action="clear-key" style="width:100%;margin-top:6px;">🔐 Clear API Key</button>
         <a class="odt-key-builder" href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Torn%20OD%20Tracker&user=log,personalstats,job&faction=upgrades" target="_blank" rel="noopener">🔑 Create a custom OD Tracker API key</a>
-
         <div class="odt-chance">
           <button class="odt-chance-header" type="button">📊 OD Chance Estimate <span class="odt-chance-arrow" style="float:right;opacity:.7;">▾</span></button>
           <div class="odt-chance-body">
@@ -891,7 +911,9 @@
         button.textContent = "🧪 Test OD data access";
         return;
       } else if (action === "record") {
-        if (confirm("Record an overdose now?")) await setLastOD(new Date().toISOString(), data);
+        if (confirm("Record an overdose now?")) {
+          await setLastOD(new Date().toISOString(), data);
+        }
       } else if (action === "edit") {
         const value = prompt(
           "Enter your last overdose date/time in UK format (DD/MM/YYYY HH:MM). Time is optional.\n\nExample: 05/09/2026 21:30",
@@ -936,25 +958,34 @@
     const data = await loadData();
     runtimeApiKey = (await getStoredApiKey()) || PDA_API_KEY;
     data.apiStatus = getApiStartupStatus();
-    if (data.apiStatus !== "Not checked") await saveData(data);
+    if (data.apiStatus !== "Not checked") {
+      await saveData(data);
+    }
 
     if (!data.trackingStarted) {
       data.trackingStarted = new Date().toISOString();
       await saveData(data);
     }
 
+    // Use Torn's dedicated Xanax-overdose log as the primary OD source.
+    // If the key cannot access user/log, fall back to the events feed.
     const logResult = await scanODLogs(data);
-    if (logResult === null) await scanEvents(data);
+    if (logResult === null) {
+      await scanEvents(data);
+    }
     await syncXanaxCount(data);
     await refreshODChanceData(data);
 
     setInterval(async () => {
       const latestLogResult = await scanODLogs(data);
-      if (latestLogResult === null) await scanEvents(data);
+      if (latestLogResult === null) {
+        await scanEvents(data);
+      }
       await syncXanaxCount(data);
       await render(data);
     }, POLL_MS);
 
+    // Only show the visual widget on profile pages.
     if (!/\/profiles\.php/i.test(location.pathname)) return;
 
     let attempts = 0;
