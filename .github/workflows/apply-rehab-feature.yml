@@ -2,7 +2,8 @@ name: Apply Rehab Feature Patch
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -15,21 +16,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Patch tracker
-        shell: python
         run: |
+          python3 - <<'PY'
           from pathlib import Path
-          import re
+          path = Path('torn-od-tracker.user.js')
+          s = path.read_text(encoding='utf-8')
+          if 'function getRehabStats(response)' in s:
+              print('Rehab feature already present; nothing to do.')
+              raise SystemExit(0)
 
-          path = Path("torn-od-tracker.user.js")
-          s = path.read_text(encoding="utf-8")
+          s = s.replace('// @version      0.8.6', '// @version      0.8.7', 1)
 
-          if "function getRehabStats(response)" in s:
-              print("Rehab feature already present; nothing to do.")
-          else:
-              s = s.replace("// @version      0.8.6", "// @version      0.8.7", 1)
-
-              marker = '''  function getJobInfo(response) {'''
-              insert = r'''  function getRehabStats(response) {
+          marker = '  function getJobInfo(response) {'
+          insert = '''  function getRehabStats(response) {
     const stats = response?.personalstats?.drugs || response?.personalstats;
     if (!stats) return null;
     const rehabs = Number(stats.rehabs);
@@ -42,11 +41,11 @@ jobs:
   }
 
 '''
-              if marker not in s: raise SystemExit("Missing getJobInfo marker")
-              s = s.replace(marker, insert + marker, 1)
+          if marker not in s: raise SystemExit('Missing getJobInfo marker')
+          s = s.replace(marker, insert + marker, 1)
 
-              marker = '''  function calculateODChance(data) {'''
-              insert = r'''  function getFactionRehabReduction(response) {
+          marker = '  function calculateODChance(data) {'
+          insert = '''  function getFactionRehabReduction(response) {
     const branches = [
       ...(Array.isArray(response?.upgrades?.peace) ? response.upgrades.peace : []),
       ...(Array.isArray(response?.upgrades?.war) ? response.upgrades.war : [])
@@ -55,7 +54,7 @@ jobs:
     let detected = false;
     for (const branch of branches) {
       for (const upgrade of (Array.isArray(branch?.upgrades) ? branch.upgrades : [])) {
-        const text = String(upgrade?.name || "") + " " + String(upgrade?.ability || "");
+        const text = String(upgrade?.name || '') + ' ' + String(upgrade?.ability || '');
         if (/rehab/i.test(text) && /cost|fee/i.test(text)) {
           reduction = Math.min(20, Math.max(0, (Number(upgrade?.level) || 0) * 2));
           detected = true;
@@ -66,11 +65,11 @@ jobs:
   }
 
 '''
-              if marker not in s: raise SystemExit("Missing calculateODChance marker")
-              s = s.replace(marker, insert + marker, 1)
+          if marker not in s: raise SystemExit('Missing calculateODChance marker')
+          s = s.replace(marker, insert + marker, 1)
 
-              marker = '''  const defaultData = {'''
-              insert = r'''  function calculateRehabEstimate(data) {
+          marker = '  const defaultData = {'
+          insert = '''  function calculateRehabEstimate(data) {
     const stats = data.rehab?.stats;
     if (!stats) return null;
     const rehabs = Math.max(0, Number(stats.rehabs) || 0);
@@ -81,70 +80,97 @@ jobs:
     const costPerAP = costPerAPBeforeFaction * (1 - rehabReduction / 100);
     const estimatedXanaxCost = costPerAP * 35;
     const averageHistoricalCost = rehabs > 0 ? (Number(stats.rehabCost) || 0) / rehabs : null;
-    return {
-      rehabs,
-      rehabCost: Number(stats.rehabCost) || 0,
-      rehabReduction,
-      currentSessionCost,
-      apPerSession,
-      costPerAP,
-      estimatedXanaxCost,
-      averageHistoricalCost
-    };
+    return { rehabs, rehabCost: Number(stats.rehabCost) || 0, rehabReduction, currentSessionCost, apPerSession, costPerAP, estimatedXanaxCost, averageHistoricalCost };
   }
 
 '''
-              if marker not in s: raise SystemExit("Missing defaultData marker")
-              s = s.replace(marker, insert + marker, 1)
+          if marker not in s: raise SystemExit('Missing defaultData marker')
+          s = s.replace(marker, insert + marker, 1)
 
-              old = '''    odChance: { drugStats: null, factionReduction: 0, factionDetected: false, nightclub7: false, nightclubDetected: false, lastChecked: null, error: null }\n  };'''
-              new = '''    odChance: { drugStats: null, factionReduction: 0, factionDetected: false, nightclub7: false, nightclubDetected: false, lastChecked: null, error: null },\n    rehab: { stats: null, factionReduction: 0, factionDetected: false, lastChecked: null, error: null }\n  };'''
-              if old not in s: raise SystemExit("Missing defaultData block")
-              s = s.replace(old, new, 1)
+          old = '''    odChance: { drugStats: null, factionReduction: 0, factionDetected: false, nightclub7: false, nightclubDetected: false, lastChecked: null, error: null }
+  };'''
+          new = '''    odChance: { drugStats: null, factionReduction: 0, factionDetected: false, nightclub7: false, nightclubDetected: false, lastChecked: null, error: null },
+    rehab: { stats: null, factionReduction: 0, factionDetected: false, lastChecked: null, error: null }
+  };'''
+          if old not in s: raise SystemExit('Missing defaultData block')
+          s = s.replace(old, new, 1)
 
-              old = '''    const [drugResponse, jobResponse, factionResponse, upgradesResponse] = await Promise.all([requestJson(personalStatsDrugsApiUrl()), requestJson(jobApiUrl()), requestJson(factionApiUrl()), requestJson(factionUpgradesApiUrl())]);\n    data.odChance = data.odChance || { ...defaultData.odChance };\n    const stats = !drugResponse?.error ? getDrugStats(drugResponse) : null;\n    const job = !jobResponse?.error ? getJobInfo(jobResponse) : null;\n    const faction = !upgradesResponse?.error ? getFactionODReduction(upgradesResponse) : { reduction: 0, detected: false };'''
-              new = '''    const [drugResponse, jobResponse, factionResponse, upgradesResponse] = await Promise.all([requestJson(personalStatsDrugsApiUrl()), requestJson(jobApiUrl()), requestJson(factionApiUrl()), requestJson(factionUpgradesApiUrl())]);\n    data.odChance = data.odChance || { ...defaultData.odChance };\n    data.rehab = data.rehab || { ...defaultData.rehab };\n    const stats = !drugResponse?.error ? getDrugStats(drugResponse) : null;\n    const rehabStats = !drugResponse?.error ? getRehabStats(drugResponse) : null;\n    const job = !jobResponse?.error ? getJobInfo(jobResponse) : null;\n    const faction = !upgradesResponse?.error ? getFactionODReduction(upgradesResponse) : { reduction: 0, detected: false };\n    const rehabFaction = !upgradesResponse?.error ? getFactionRehabReduction(upgradesResponse) : { reduction: 0, detected: false };'''
-              if old not in s: raise SystemExit("Missing refresh data block")
-              s = s.replace(old, new, 1)
+          old = '''    data.odChance = data.odChance || { ...defaultData.odChance };
+    const stats = !drugResponse?.error ? getDrugStats(drugResponse) : null;
+    const job = !jobResponse?.error ? getJobInfo(jobResponse) : null;
+    const faction = !upgradesResponse?.error ? getFactionODReduction(upgradesResponse) : { reduction: 0, detected: false };'''
+          new = '''    data.odChance = data.odChance || { ...defaultData.odChance };
+    data.rehab = data.rehab || { ...defaultData.rehab };
+    const stats = !drugResponse?.error ? getDrugStats(drugResponse) : null;
+    const rehabStats = !drugResponse?.error ? getRehabStats(drugResponse) : null;
+    const job = !jobResponse?.error ? getJobInfo(jobResponse) : null;
+    const faction = !upgradesResponse?.error ? getFactionODReduction(upgradesResponse) : { reduction: 0, detected: false };
+    const rehabFaction = !upgradesResponse?.error ? getFactionRehabReduction(upgradesResponse) : { reduction: 0, detected: false };'''
+          if old not in s: raise SystemExit('Missing refresh block')
+          s = s.replace(old, new, 1)
 
-              old = '''    if (faction.detected) {\n      data.odChance.factionReduction = faction.reduction;\n      data.odChance.factionDetected = true;\n    }\n    data.odChance.lastChecked = new Date().toISOString();\n    data.odChance.error = null;'''
-              new = '''    if (faction.detected) {\n      data.odChance.factionReduction = faction.reduction;\n      data.odChance.factionDetected = true;\n    }\n    if (rehabStats) data.rehab.stats = rehabStats;\n    if (rehabFaction.detected) {\n      data.rehab.factionReduction = rehabFaction.reduction;\n      data.rehab.factionDetected = true;\n    }\n    data.odChance.lastChecked = new Date().toISOString();\n    data.rehab.lastChecked = new Date().toISOString();\n    data.odChance.error = null;\n    data.rehab.error = null;'''
-              if old not in s: raise SystemExit("Missing refresh tail")
-              s = s.replace(old, new, 1)
+          old = '''    if (faction.detected) {
+      data.odChance.factionReduction = faction.reduction;
+      data.odChance.factionDetected = true;
+    }
+    data.odChance.lastChecked = new Date().toISOString();
+    data.odChance.error = null;'''
+          new = '''    if (faction.detected) {
+      data.odChance.factionReduction = faction.reduction;
+      data.odChance.factionDetected = true;
+    }
+    if (rehabStats) data.rehab.stats = rehabStats;
+    if (rehabFaction.detected) {
+      data.rehab.factionReduction = rehabFaction.reduction;
+      data.rehab.factionDetected = true;
+    }
+    data.odChance.lastChecked = new Date().toISOString();
+    data.rehab.lastChecked = new Date().toISOString();
+    data.odChance.error = null;
+    data.rehab.error = null;'''
+          if old not in s: raise SystemExit('Missing refresh tail')
+          s = s.replace(old, new, 1)
 
-              marker = '''    const apiKeyButton = root.querySelector(".odt-api-key-button");'''
-              insert = r'''    const rehab = calculateRehabEstimate(data);
+          marker = '    const apiKeyButton = root.querySelector(".odt-api-key-button");'
+          insert = '''    const rehab = calculateRehabEstimate(data);
     const rehabFields = {
-      "rehab-count": rehab ? rehab.rehabs.toLocaleString("en-GB") : "Unavailable",
-      "rehab-session-cost": rehab ? `$${Math.round(rehab.currentSessionCost).toLocaleString("en-GB")}` : "Unavailable",
-      "rehab-spend": rehab ? `$${Math.round(rehab.rehabCost).toLocaleString("en-GB")}` : "Unavailable",
-      "rehab-ap": rehab ? rehab.apPerSession.toFixed(1) + " AP" : "Unavailable",
-      "rehab-ap-cost": rehab ? `$${Math.round(rehab.costPerAP).toLocaleString("en-GB")}/AP` : "Unavailable",
-      "rehab-xanax": rehab ? `$${Math.round(rehab.estimatedXanaxCost).toLocaleString("en-GB")}` : "Unavailable",
-      "rehab-reduction": rehab ? rehab.rehabReduction + "%" : "Unavailable"
+      'rehab-count': rehab ? rehab.rehabs.toLocaleString('en-GB') : 'Unavailable',
+      'rehab-session-cost': rehab ? `$${Math.round(rehab.currentSessionCost).toLocaleString('en-GB')}` : 'Unavailable',
+      'rehab-spend': rehab ? `$${Math.round(rehab.rehabCost).toLocaleString('en-GB')}` : 'Unavailable',
+      'rehab-ap': rehab ? rehab.apPerSession.toFixed(1) + ' AP' : 'Unavailable',
+      'rehab-ap-cost': rehab ? `$${Math.round(rehab.costPerAP).toLocaleString('en-GB')}/AP` : 'Unavailable',
+      'rehab-xanax': rehab ? `$${Math.round(rehab.estimatedXanaxCost).toLocaleString('en-GB')}` : 'Unavailable',
+      'rehab-reduction': rehab ? rehab.rehabReduction + '%' : 'Unavailable'
     };
     for (const [cls, value] of Object.entries(rehabFields)) {
-      const el = root.querySelector("." + cls);
+      const el = root.querySelector('.' + cls);
       if (el) el.textContent = value;
     }
-    const rehabNote = root.querySelector(".odt-rehab-note");
+    const rehabNote = root.querySelector('.odt-rehab-note');
     if (rehabNote) {
       rehabNote.textContent = rehab
-        ? "This estimates rehab economics from your lifetime rehab count. Your exact current addiction level is not exposed by the API, so it cannot say exactly how many sessions you need right now."
-        : "Rehab data unavailable from the current API key.";
+        ? 'This estimates rehab economics from your lifetime rehab count. Your exact current addiction level is not exposed by the API, so it cannot say exactly how many sessions you need right now.'
+        : 'Rehab data unavailable from the current API key.';
     }
 
 '''
-              if marker not in s: raise SystemExit("Missing render marker")
-              s = s.replace(marker, insert + marker, 1)
+          if marker not in s: raise SystemExit('Missing render marker')
+          s = s.replace(marker, insert + marker, 1)
 
-              marker = '''      #${ROOT_ID} .odt-api-test { margin-top:7px; }'''
-              insert = '''      #${ROOT_ID} .odt-rehab { margin-top:10px; border-top:1px solid #333; padding-top:9px; }\n      #${ROOT_ID} .odt-rehab-header { width:100%; border:0; background:none; color:#ddd; text-align:left; padding:3px 0; font-size:12px; font-weight:600; cursor:pointer; }\n      #${ROOT_ID} .odt-rehab-body { display:none; margin-top:7px; }\n      #${ROOT_ID} .odt-rehab-body.open { display:block; }\n      #${ROOT_ID} .odt-rehab-grid { display:grid; grid-template-columns:1fr auto; gap:4px 8px; }\n      #${ROOT_ID} .odt-rehab-value { text-align:right; color:#fff; font-weight:600; }\n      #${ROOT_ID} .odt-rehab-note { margin-top:8px; font-size:10px; opacity:.65; }\n'''
-              if marker not in s: raise SystemExit("Missing CSS marker")
-              s = s.replace(marker, insert + "      " + marker.strip(), 1)
+          marker = '      #${ROOT_ID} .odt-api-test { margin-top:7px; }'
+          insert = '''      #${ROOT_ID} .odt-rehab { margin-top:10px; border-top:1px solid #333; padding-top:9px; }
+      #${ROOT_ID} .odt-rehab-header { width:100%; border:0; background:none; color:#ddd; text-align:left; padding:3px 0; font-size:12px; font-weight:600; cursor:pointer; }
+      #${ROOT_ID} .odt-rehab-body { display:none; margin-top:7px; }
+      #${ROOT_ID} .odt-rehab-body.open { display:block; }
+      #${ROOT_ID} .odt-rehab-grid { display:grid; grid-template-columns:1fr auto; gap:4px 8px; }
+      #${ROOT_ID} .odt-rehab-value { text-align:right; color:#fff; font-weight:600; }
+      #${ROOT_ID} .odt-rehab-note { margin-top:8px; font-size:10px; opacity:.65; }
+'''
+          if marker not in s: raise SystemExit('Missing CSS marker')
+          s = s.replace(marker, insert + marker, 1)
 
-              marker = '''        <button class="odt-action odt-api-test" data-action="test-api" style="width:100%;">🧪 Test OD data access</button>'''
-              insert = r'''        <div class="odt-rehab">
+          marker = '        <button class="odt-action odt-api-test" data-action="test-api" style="width:100%;">🧪 Test OD data access</button>'
+          insert = '''        <div class="odt-rehab">
           <button class="odt-rehab-header" type="button">🏥 Rehab Estimate <span class="odt-rehab-arrow" style="float:right;opacity:.7;">▾</span></button>
           <div class="odt-rehab-body">
             <div class="odt-rehab-grid">
@@ -162,11 +188,11 @@ jobs:
         </div>
 
 '''
-              if marker not in s: raise SystemExit("Missing HTML marker")
-              s = s.replace(marker, insert + marker, 1)
+          if marker not in s: raise SystemExit('Missing HTML marker')
+          s = s.replace(marker, insert + marker, 1)
 
-              marker = '''    const chanceHeader = root.querySelector(".odt-chance-header");'''
-              insert = r'''    const rehabHeader = root.querySelector(".odt-rehab-header");
+          marker = '    const chanceHeader = root.querySelector(".odt-chance-header");'
+          insert = '''    const rehabHeader = root.querySelector(".odt-rehab-header");
     const rehabBody = root.querySelector(".odt-rehab-body");
     rehabHeader.addEventListener("click", () => {
       const open = rehabBody.classList.toggle("open");
@@ -174,18 +200,17 @@ jobs:
     });
 
 '''
-              if marker not in s: raise SystemExit("Missing event marker")
-              s = s.replace(marker, insert + marker, 1)
+          if marker not in s: raise SystemExit('Missing event marker')
+          s = s.replace(marker, insert + marker, 1)
 
-              path.write_text(s, encoding="utf-8")
-              print("Rehab feature patch applied.")
+          path.write_text(s, encoding='utf-8')
+          print('Rehab feature patch applied.')
+          PY
 
-      - name: Commit and remove one-time workflow
-        shell: bash
+      - name: Commit patch
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add torn-od-tracker.user.js
-          git rm .github/workflows/apply-rehab-feature.yml
-          git commit -m "Add rehab cost estimate to OD tracker"
+          git commit -m 'Add rehab cost estimate to OD tracker' || exit 0
           git push
