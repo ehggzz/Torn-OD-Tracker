@@ -1,4 +1,4 @@
-name: Apply OD Tracker QoL update
+name: Apply OD Tracker history interval fix
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Apply QoL change
+      - name: Move OD interval to the older history entry
         shell: python
         run: |
           from pathlib import Path
@@ -23,54 +23,28 @@ jobs:
           path = Path('torn-od-tracker.user.js')
           text = path.read_text(encoding='utf-8')
 
-          if '@version      0.8.6' not in text:
-              raise SystemExit('Expected version 0.8.6 was not found; refusing to modify the file.')
+          if '@version      0.8.8' not in text:
+              raise SystemExit('Expected version 0.8.8 was not found; refusing to modify the file.')
 
-          text = text.replace('@version      0.8.6', '@version      0.8.7', 1)
-
-          old_duration = '''  function formatDuration(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return "0m";
-    const totalMinutes = Math.floor(ms / 60000);
-    const days = Math.floor(totalMinutes / 1440);
-    const hours = Math.floor((totalMinutes % 1440) / 60);
-    const minutes = totalMinutes % 60;
-    if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
-  }
+          old = '''            const olderEntry = data.history[i + 1];
+            const gap = olderEntry
+              ? `<span class="odt-history-gap">• ${formatCompactDuration(new Date(entry.od).getTime() - new Date(olderEntry.od).getTime())} between ODs</span>`
+              : "";
+            return `<div class="odt-history-row">${i + 1}. ${formatDate(entry.od)} ${xanax} ${gap}</div>`;
 '''
 
-          new_duration = old_duration + '''
-  function formatCompactDuration(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return "0m";
-    const totalHours = Math.floor(ms / 3600000);
-    const days = Math.floor(totalHours / 24);
-    const hours = totalHours % 24;
-    const minutes = Math.floor((ms % 3600000) / 60000);
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
-  }
+          new = '''            const newerEntry = data.history[i - 1];
+            const gap = newerEntry
+              ? `<span class="odt-history-gap">• ${formatCompactDuration(new Date(newerEntry.od).getTime() - new Date(entry.od).getTime())} between ODs</span>`
+              : "";
+            return `<div class="odt-history-row">${i + 1}. ${formatDate(entry.od)} ${xanax} ${gap}</div>`;
 '''
 
-          if old_duration not in text:
-              raise SystemExit('Expected formatDuration block was not found; refusing to modify the file.')
-          text = text.replace(old_duration, new_duration, 1)
+          if old not in text:
+              raise SystemExit('Expected history interval block was not found; refusing to modify the file.')
 
-          old_xanax = '''    root.querySelector(".odt-xanax").textContent =
-      `💊 Xanax since OD: ${Number(data.xanaxSinceOD) || 0}`;
-'''
-
-          new_xanax = '''    const xanax = Number(data.xanaxSinceOD) || 0;
-    const elapsed = formatCompactDuration(Date.now() - new Date(data.lastOD).getTime());
-    root.querySelector(".odt-xanax").textContent =
-      `💊 ${xanax.toLocaleString("en-GB")} Xan · ${elapsed} between ODs`;
-'''
-
-          if old_xanax not in text:
-              raise SystemExit('Expected Xanax display block was not found; refusing to modify the file.')
-          text = text.replace(old_xanax, new_xanax, 1)
-
+          text = text.replace(old, new, 1)
+          text = text.replace('@version      0.8.8', '@version      0.8.9', 1)
           path.write_text(text, encoding='utf-8')
 
       - name: Commit update and remove temporary workflow
@@ -79,5 +53,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/od-tracker-qol-update.yml
           git add torn-od-tracker.user.js
-          git commit -m "feat: show Xanax interval duration"
+          git commit -m "fix: align OD interval with older history entry"
           git push
