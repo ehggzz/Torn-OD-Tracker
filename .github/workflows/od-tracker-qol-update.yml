@@ -1,9 +1,6 @@
 name: Apply OD Tracker history interval fix
 
-on:
-  push:
-    paths:
-      - '.github/workflows/od-tracker-qol-update.yml'
+on: push
 
 permissions:
   contents: write
@@ -52,6 +49,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/od-tracker-qol-update.yml
+          git rm .od-tracker-qol-trigger
           git add torn-od-tracker.user.js
           git commit -m "fix: align OD interval with older history entry"
           git push
