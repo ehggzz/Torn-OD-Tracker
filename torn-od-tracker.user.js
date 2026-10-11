@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.6
+// @version      0.8.7
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -178,6 +178,17 @@
     const hours = Math.floor((totalMinutes % 1440) / 60);
     const minutes = totalMinutes % 60;
     if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  }
+
+  function formatCompactDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "0m";
+    const totalHours = Math.floor(ms / 3600000);
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    const minutes = Math.floor((ms % 3600000) / 60000);
+    if (days > 0) return `${days}d ${hours}h`;
     if (hours > 0) return `${hours}h ${minutes}m`;
     return `${minutes}m`;
   }
@@ -708,8 +719,10 @@
       root.querySelector(".odt-status").textContent = "since last overdose";
       root.querySelector(".odt-last").textContent =
         `Last OD: ${formatDate(data.lastOD)}`;
+      const xanax = Number(data.xanaxSinceOD) || 0;
+      const elapsed = formatCompactDuration(Date.now() - new Date(data.lastOD).getTime());
       root.querySelector(".odt-xanax").textContent =
-        `💊 Xanax since OD: ${Number(data.xanaxSinceOD) || 0}`;
+        `💊 ${xanax.toLocaleString("en-GB")} Xan · ${elapsed} between ODs`;
     } else {
       root.querySelector(".odt-time").textContent = "Previous OD unknown";
       root.querySelector(".odt-status").textContent =
