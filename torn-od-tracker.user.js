@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.8
+// @version      0.8.9
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -750,9 +750,9 @@
             const xanax = entry.xanax === null || entry.xanax === undefined
               ? ""
               : `<span class="odt-history-xan">• ${entry.xanax} Xanax</span>`;
-            const olderEntry = data.history[i + 1];
-            const gap = olderEntry
-              ? `<span class="odt-history-gap">• ${formatCompactDuration(new Date(entry.od).getTime() - new Date(olderEntry.od).getTime())} between ODs</span>`
+            const newerEntry = data.history[i - 1];
+            const gap = newerEntry
+              ? `<span class="odt-history-gap">• ${formatCompactDuration(new Date(newerEntry.od).getTime() - new Date(entry.od).getTime())} between ODs</span>`
               : "";
             return `<div class="odt-history-row">${i + 1}. ${formatDate(entry.od)} ${xanax} ${gap}</div>`;
           }).join("")
