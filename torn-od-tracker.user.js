@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OD Tracker
 // @namespace    https://github.com/ehggzz/Torn-OD-Tracker
-// @version      0.8.7
+// @version      0.8.8
 // @description  Track time since your last overdose and Xanax taken since then.
 // @author       ehggzz
 // @license      MIT
@@ -479,8 +479,6 @@
       }
 
       for (const log of getLogList(response)) {
-        // The overdose-causing dose is at the OD timestamp itself.
-        // Only count Xanax uses strictly after the recorded OD.
         if (log.timestamp > odTime && log.id === 2290) {
           total++;
         }
@@ -575,8 +573,6 @@
     for (const event of events) {
       if (event.timestamp <= checkpoint) continue;
 
-      // We only use the event stream to identify the exact time of an OD.
-      // Xanax totals themselves come from personalstats.xantaken.
       if (isXanaxOD(event.text)) {
         const odIso = new Date(event.timestamp).toISOString();
 
@@ -603,7 +599,6 @@
 
     if (changed) await saveData(data);
 
-    // Refresh the cumulative Xanax calculation after processing any new OD.
     const xanaxChanged = await syncXanaxCount(data);
     return changed || xanaxChanged;
   }
@@ -641,6 +636,7 @@
       #${ROOT_ID} .odt-history.open { display:block; }
       #${ROOT_ID} .odt-history-row { padding:5px 0; border-bottom:1px solid #333; }
       #${ROOT_ID} .odt-history-xan { opacity:.7; margin-left:5px; }
+      #${ROOT_ID} .odt-history-gap { opacity:.7; margin-left:5px; }
       #${ROOT_ID} .odt-danger { color:#f08a8a !important; }
       #od-tracker-root .odt-api-note { margin-top:8px; font-size:10px; opacity:.55; }
       #od-tracker-root .odt-chance { margin-top:10px; border-top:1px solid #333; padding-top:9px; }
@@ -720,9 +716,8 @@
       root.querySelector(".odt-last").textContent =
         `Last OD: ${formatDate(data.lastOD)}`;
       const xanax = Number(data.xanaxSinceOD) || 0;
-      const elapsed = formatCompactDuration(Date.now() - new Date(data.lastOD).getTime());
       root.querySelector(".odt-xanax").textContent =
-        `💊 ${xanax.toLocaleString("en-GB")} Xan · ${elapsed} between ODs`;
+        `💊 ${xanax.toLocaleString("en-GB")} Xan`;
     } else {
       root.querySelector(".odt-time").textContent = "Previous OD unknown";
       root.querySelector(".odt-status").textContent =
@@ -755,7 +750,11 @@
             const xanax = entry.xanax === null || entry.xanax === undefined
               ? ""
               : `<span class="odt-history-xan">• ${entry.xanax} Xanax</span>`;
-            return `<div class="odt-history-row">${i + 1}. ${formatDate(entry.od)} ${xanax}</div>`;
+            const olderEntry = data.history[i + 1];
+            const gap = olderEntry
+              ? `<span class="odt-history-gap">• ${formatCompactDuration(new Date(entry.od).getTime() - new Date(olderEntry.od).getTime())} between ODs</span>`
+              : "";
+            return `<div class="odt-history-row">${i + 1}. ${formatDate(entry.od)} ${xanax} ${gap}</div>`;
           }).join("")
         : '<div class="odt-muted">No OD history recorded yet.</div>';
     }
@@ -980,8 +979,6 @@
       await saveData(data);
     }
 
-    // Use Torn's dedicated Xanax-overdose log as the primary OD source.
-    // If the key cannot access user/log, fall back to the events feed.
     const logResult = await scanODLogs(data);
     if (logResult === null) {
       await scanEvents(data);
@@ -998,7 +995,6 @@
       await render(data);
     }, POLL_MS);
 
-    // Only show the visual widget on profile pages.
     if (!/\/profiles\.php/i.test(location.pathname)) return;
 
     let attempts = 0;
